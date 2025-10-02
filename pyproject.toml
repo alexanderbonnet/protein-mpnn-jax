@@ -1,0 +1,17 @@
+[project]
+name = "protein-mpnn-jax"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "beartype>=0.21.0",
+    "einops>=0.8.1",
+    "jax>=0.7.2",
+    "jaxtyping>=0.3.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+]
