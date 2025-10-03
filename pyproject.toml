@@ -7,10 +7,12 @@ requires-python = ">=3.13"
 dependencies = [
     "beartype>=0.21.0",
     "einops>=0.8.1",
+    "equinox>=0.13.1",
     "gemmi>=0.7.3",
     "jax>=0.7.2",
     "jaxtyping>=0.3.3",
     "loguru>=0.7.3",
+    "torch>=2.8.0",
 ]
 
 [dependency-groups]

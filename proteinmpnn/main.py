@@ -3,20 +3,26 @@ import os
 
 import gemmi
 import jax.numpy as jnp
-from jaxtyping import Float, Int
+from jax import Array
+from jaxtyping import Float
 from loguru import logger
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class BackboneStructure:
-    # residue data
-    residue_index: Int[jnp.ndarray, " n"]
+class ResidueStructure:
+    index: int
+    carbon_alpha_pos: Float[Array, " 3"]
+    carbon_pos: Float[Array, " 3"]
+    nitrogen_pos: Float[Array, " 3"]
+    oxygen_pos: Float[Array, " 3"]
+    chain_index: int
 
-    # atom data
-    atom_positions: Float[jnp.ndarray, "n 3"]
-
-    # chain data
-    chain_index: Int[jnp.ndarray, " n"]
+    @property
+    def carbon_beta(self):
+        b = self.carbon_alpha_pos - self.nitrogen_pos
+        c = self.carbon_pos - self.carbon_alpha_pos
+        a = jnp.cross(b, c)
+        return -0.58273431 * a + 0.56802827 * b - 0.54067466 * c + self.carbon_alpha_pos
 
 
 def read_structure(filepath: os.PathLike, use_assembly: bool = True) -> gemmi.Structure:
@@ -34,6 +40,7 @@ def read_structure(filepath: os.PathLike, use_assembly: bool = True) -> gemmi.St
     structure.assign_label_seq_id()
 
     # clean up structure
+    structure.remove_alternative_conformations()
     structure.remove_hydrogens()
     structure.remove_waters()
     structure.remove_empty_chains()
@@ -41,27 +48,27 @@ def read_structure(filepath: os.PathLike, use_assembly: bool = True) -> gemmi.St
     return structure
 
 
-def parse_structure(structure: gemmi.Structure) -> BackboneStructure:
+def parse_structure(structure: gemmi.Structure) -> list[ResidueStructure]:
     """Parse a gemmi Structure into an AtomStructure object."""
     # only parse the first model
     model = structure[0]
 
-    chain_indices = []
-    residue_indices = []
-    atom_positions = []
+    residues = []
     for i, chain in enumerate(model):
-        for residue in chain.get_polymer():
-            for atom in residue:
-                if atom.name == "CA":
-                    atom_positions.append(atom.pos.tolist())
-                    residue_indices.append(residue.label_seq - 1)  # zero-indexed
-                    chain_indices.append(i)
+        for residue in enumerate(chain.get_polymer()):
+            residue_index = residue.label_seq - 1  # zero-indexed
+            atom_pos = {atom.name: atom.pos.tolist() for atom in residue}
+            residue_structure = ResidueStructure(
+                index=residue_index,
+                carbon_alpha_pos=jnp.array(atom_pos["CA"], dtype=jnp.float32),
+                carbon_pos=jnp.array(atom_pos["C"], dtype=jnp.float32),
+                nitrogen_pos=jnp.array(atom_pos["N"], dtype=jnp.float32),
+                oxygen_pos=jnp.array(atom_pos["O"], dtype=jnp.float32),
+                chain_index=i,
+            )
+            residues.append(residue_structure)
 
-    return BackboneStructure(
-        residue_index=jnp.array(residue_indices, dtype=jnp.int32),
-        atom_positions=jnp.array(atom_positions, dtype=jnp.float32),
-        chain_index=jnp.array(chain_indices, dtype=jnp.int32),
-    )
+    return residues
 
 
 def main():
