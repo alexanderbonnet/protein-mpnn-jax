@@ -43,41 +43,6 @@ def radial_basis_function(
     return jnp.exp(-beta * (einops.rearrange(x, "n k -> n k ()") - mu) ** 2)
 
 
-def backbone_features(
-    backbone_pos: Float[Array, "n 4 3"],
-    dmin: float = 2.0,
-    dmax: float = 22.0,
-    rbf_dim: int = 16,
-    k_neighbors: int = 30,
-) -> Float[Array, "n 3"]:
-    """Compute backbone features for a protein structure."""
-    ca = backbone_pos[:, constants.ATOM_INDICES["CA"], :]
-    ca_distances = pairwise_distances(ca, ca)
-    ca_distances, edge_index = mink_neighbors(ca_distances, k=k_neighbors)
-
-    b = ca - backbone_pos[:, constants.ATOM_INDICES["N"], :]
-    c = backbone_pos[:, constants.ATOM_INDICES["C"], :] - ca
-    a = jnp.cross(b, c)
-    cb = -0.58273431 * a + 0.56802827 * b - 0.54067466 * c + ca
-
-    backbone_pos = jnp.concat([backbone_pos, cb[:, None, :]], axis=1)
-
-    radial_basis_ = [
-        radial_basis_function(ca_distances, dmin=dmin, dmax=dmax, dim=rbf_dim)
-    ]
-    for atom1, atom2 in constants.ATOM_PAIR_RBFS:
-        idx1 = constants.ATOM_INDICES[atom1]
-        idx2 = constants.ATOM_INDICES[atom2]
-        d = pairwise_distances(backbone_pos[:, idx1, :], backbone_pos[:, idx2, :])
-        d = gather_edges(d, edge_index)
-        rbf = radial_basis_function(d, dmin=dmin, dmax=dmax, dim=rbf_dim)
-        radial_basis_.append(rbf)
-
-    radial_basis = einops.rearrange(radial_basis_, "b n1 n2 d -> n1 n2 (b d)")
-
-    return radial_basis, edge_index
-
-
 def gather_edges(
     edges: Float[Array, "n n dim"], edge_index: Int[Array, "n k"]
 ) -> Float[Array, "n k dim"]:
@@ -116,26 +81,26 @@ class PositionalEmbedding(eqx.Module):
         offset = gather_edges(offset.astype(jnp.int32), edge_index)
 
         clipped = jnp.clip(offset - self.max_offset, 0, 2 * self.max_offset + 1)
-        one_hot = jax.nn.one_hot(
-            clipped, 2 * self.max_offset + 1 + 1, dtype=jnp.float32
-        )
+        one_hot = jax.nn.one_hot(clipped, 2 * self.max_offset + 1 + 1)
         return self.linear(one_hot)
 
 
 class FeedForward(eqx.Module):
-    linear_in: nn.Linear
-    linear_out: nn.Linear
+    ff: nn.Sequential
 
     def __init__(self, dim: int, factor: int = 4, *, key: PRNGKeyArray) -> None:
         key1, key2 = jr.split(key, 2)
 
-        self.linear_in = nn.Linear(dim, dim * factor, use_bias=False, key=key1)
-        self.linear_out = nn.Linear(dim * factor, dim, use_bias=False, key=key2)
+        self.ff = nn.Sequential(
+            [
+                nn.Linear(dim, dim * factor, use_bias=False, key=key1),
+                nn.Lambda(jax.nn.gelu),
+                nn.Linear(dim * factor, dim, use_bias=False, key=key2),
+            ]
+        )
 
-    def __call__(self, x: Float[Array, " ... dim"]) -> Float[Array, " ... dim"]:
-        x = self.linear_in(x)
-        x = jax.nn.gelu(x)
-        return self.linear_out(x)
+    def __call__(self, x: Float[Array, " n dim"]) -> Float[Array, " n dim"]:
+        return jax.vmap(self.ff)(x)
 
 
 class SubBlock(eqx.Module):
@@ -144,19 +109,23 @@ class SubBlock(eqx.Module):
     def __init__(self, in_dim: int, dim: int, *, key: PRNGKeyArray) -> None:
         key1, key2, key3 = jr.split(key, 3)
 
-        self.in_block = nn.Sequential(
-            nn.Linear(in_dim, dim, key=key1),
-            nn.Lambda(jax.nn.gelu),
-            nn.Linear(dim, dim, key=key2),
-            nn.Lambda(jax.nn.gelu),
-            nn.Linear(dim, dim, key=key3),
+        self.block = nn.Sequential(
+            [
+                nn.Linear(in_dim, dim, key=key1),
+                nn.Lambda(jax.nn.gelu),
+                nn.Linear(dim, dim, key=key2),
+                nn.Lambda(jax.nn.gelu),
+                nn.Linear(dim, dim, key=key3),
+            ]
         )
 
-    def __call__(self, x: Float[Array, "... in_dim"]) -> Float[Array, "... dim"]:
-        return self.block(x)
+    def __call__(self, x: Float[Array, "n k in_dim"]) -> Float[Array, "n k dim"]:
+        return jax.vmap(jax.vmap(self.block))(x)
 
 
 class EncoderBlock(eqx.Module):
+    scale: float
+
     in_block: SubBlock
     out_block: SubBlock
 
@@ -200,9 +169,9 @@ class EncoderBlock(eqx.Module):
         nodes: Float[Array, "n dim"],
         edges: Float[Array, "n k dim"],
         edge_index: Int[Array, "n k"],
+        enable_dropout: bool,
         mask_nodes: Bool[Array, " n"],
         mask_edges: Bool[Array, "n k"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
     ) -> tuple[Float[Array, "n dim"], Float[Array, "n k dim"]]:
         _, k, _ = edges.shape
@@ -217,12 +186,12 @@ class EncoderBlock(eqx.Module):
         message = self.in_block(message)
         message = einops.reduce(message, "n k d -> n d", "sum") / self.scale
         message = self.dropout1(message, key=key, inference=not enable_dropout)
-        out_nodes = self.norm1(nodes + message)
+        out_nodes = jax.vmap(self.norm1)(nodes + message)
 
         message = self.feedforward(out_nodes)
         message = self.dropout1(message, key=key, inference=not enable_dropout)
         message = message * einops.rearrange(mask_edges, "n k -> n k ()")
-        out_nodes = self.norm2(out_nodes + message)
+        out_nodes = jax.vmap(self.norm2)(out_nodes + message)
         out_nodes = out_nodes * einops.rearrange(mask_nodes, "n -> n ()")
 
         message = jnp.concat(
@@ -235,12 +204,14 @@ class EncoderBlock(eqx.Module):
         )
         message = self.out_block(message)
         message = self.dropout3(message, key=key, inference=not enable_dropout)
-        out_edges = self.norm2(edges + message)
+        out_edges = jax.vmap(jax.vmap(self.norm3))(edges + message)
         return out_nodes, out_edges
 
 
 class DecoderBlock(eqx.Module):
-    block: nn.Sequential
+    scale: float
+
+    block: SubBlock
 
     dropout1: nn.Dropout
     dropout2: nn.Dropout
@@ -254,7 +225,7 @@ class DecoderBlock(eqx.Module):
         self,
         dim: int,
         dropout_rate: float,
-        scale: int,
+        scale: float = 30,
         *,
         key: PRNGKeyArray,
     ) -> None:
@@ -276,9 +247,9 @@ class DecoderBlock(eqx.Module):
         self,
         nodes: Float[Array, "n d"],
         edges: Float[Array, "n k dim"],
+        enable_dropout: bool,
         mask_nodes: Bool[Array, " n"],
         mask_edges: Bool[Array, "n k"],
-        enable_dropout: bool,
         key: PRNGKeyArray,
     ) -> Float[Array, "n dim"]:
         _, k, _ = edges.shape
@@ -300,9 +271,100 @@ class DecoderBlock(eqx.Module):
         return out_nodes * einops.rearrange(mask_nodes, "n -> n ()")
 
 
+def backbone_features(
+    backbone_pos: Float[Array, "n 4 3"],
+    dmin: float = 2.0,
+    dmax: float = 22.0,
+    rbf_dim: int = 16,
+    k_neighbors: int = 30,
+) -> tuple[Float[Array, "n n dim"], Int[Array, "n k"]]:
+    """Compute backbone features for a protein structure."""
+    ca = backbone_pos[:, constants.ATOM_INDICES["CA"], :]
+    ca_distances = pairwise_distances(ca, ca)
+    ca_distances, edge_index = mink_neighbors(ca_distances, k=k_neighbors)
+
+    b = ca - backbone_pos[:, constants.ATOM_INDICES["N"], :]
+    c = backbone_pos[:, constants.ATOM_INDICES["C"], :] - ca
+    a = jnp.cross(b, c)
+    cb = -0.58273431 * a + 0.56802827 * b - 0.54067466 * c + ca
+
+    backbone_pos = jnp.concat([backbone_pos, cb[:, None, :]], axis=1)
+
+    radial_basis_ = [
+        radial_basis_function(ca_distances, dmin=dmin, dmax=dmax, dim=rbf_dim)
+    ]
+    for atom1, atom2 in constants.ATOM_PAIR_RBFS:
+        idx1 = constants.ATOM_INDICES[atom1]
+        idx2 = constants.ATOM_INDICES[atom2]
+        d = pairwise_distances(backbone_pos[:, idx1, :], backbone_pos[:, idx2, :])
+        d = gather_edges(d, edge_index)
+        rbf = radial_basis_function(d, dmin=dmin, dmax=dmax, dim=rbf_dim)
+        radial_basis_.append(rbf)
+
+    radial_basis = einops.rearrange(radial_basis_, "b n1 n2 d -> n1 n2 (b d)")
+
+    return radial_basis, edge_index
+
+
+class FeatureEmbedding(eqx.Module):
+    rbf_dim: int
+    rbf_dmin: float
+    rbf_dmax: float
+    k: int
+
+    edge_embedding: nn.Linear
+    edge_norm: nn.LayerNorm
+
+    def __init__(
+        self,
+        in_edge_dim: int,
+        dim: int,
+        pos_emb_dim: int,
+        rbf_dmin: float = 2.0,
+        rbf_dmax: float = 22.0,
+        rbf_dim: int = 16,
+        k: int = 30,
+        *,
+        key: PRNGKeyArray,
+    ) -> None:
+        key1, key2 = jr.split(key)
+        self.rbf_dim = rbf_dim
+        self.rbf_dmin = rbf_dmin
+        self.rbf_dmax = rbf_dmax
+        self.k = k
+
+        self.edge_embedding = nn.Linear(in_edge_dim, dim, use_bias=False, key=key1)
+        self.edge_norm = nn.LayerNorm(dim)
+        self.positional_embedding = nn.Embedding(pos_emb_dim, key=key2)
+
+    def __call__(
+        self, backbone_pos: Float[Array, "n 4 3"]
+    ) -> tuple[Float[Array, "n n dim"], Int[Array, "n k"]]:
+        radial_basis, edge_index = backbone_features(
+            backbone_pos,
+            dmin=self.rbf_dim,
+            dmax=self.rbf_dmax,
+            rbf_dim=self.rbf_dim,
+            k_neighbors=self.k,
+        )
+
+        pass
+
+
 class ProteinMPNN(eqx.Module):
+    k: int
+
+    edge_embedding: nn.Linear
+    edge_norm: nn.Linear
+    positional_embedding: nn.Embedding
+
     edge_linear: nn.Linear
     encoder_blocks: list[EncoderBlock]
+
+    sequence_embedding: nn.Embedding
+    decoder_blocks: list[DecoderBlock]
+
+    linear_out: nn.Linear
 
     def __init__(
         self,
@@ -310,17 +372,20 @@ class ProteinMPNN(eqx.Module):
         dim: int,
         k: int,
         num_encoder_blocks: int,
+        num_decoder_blocks: int,
         vocab: int = 21,
         dropout_rate: float = 0.1,
         *,
         key: Array,
     ) -> None:
-        key1, key2, key3 = jr.split(key, 2)
+        key1, key2, key3, key4, key5 = jr.split(key, 5)
 
         self.k = k
 
+        self.edge_embedding = nn.Linear(in_edge_dim, dim, use_bias=False)
+
         # encoder blocks
-        self.edge_linear = nn.Linear(in_edge_dim, dim, key=key1)
+        self.edge_linear = nn.Linear(dim, dim, key=key1)
         self.encoder_blocks = [
             EncoderBlock(dim=dim, dropout_rate=dropout_rate, key=key)
             for key in jr.split(key2, num_encoder_blocks)
@@ -328,12 +393,17 @@ class ProteinMPNN(eqx.Module):
 
         # decoder blocks
         self.sequence_embedding = nn.Embedding(21, vocab, key=key3)
+        self.decoder_blocks = [
+            DecoderBlock(dim=dim, dropout_rate=dropout_rate, key=key)
+            for key in jr.split(key4, num_decoder_blocks)
+        ]
+
+        # output
+        self.linear_out = nn.Linear(dim, vocab, key=key5)
 
     def encode(
         self,
         pos: Float[Array, "n 4 3"],
-        edges: Float[Array, "n k eidim"],
-        edge_index: Int[Array, "n k"],
         enable_dropout: bool,
         key: PRNGKeyArray,
     ) -> tuple[Float[Array, "n dim"], Float[Array, "n k dim"]]:
@@ -342,7 +412,7 @@ class ProteinMPNN(eqx.Module):
         n, _, in_edge_dim = edges.shape
         nodes = jnp.zeros((n, in_edge_dim), device=pos.device)
 
-        edges = self.edge_linear(edges)
+        edges = jax.vmap(jax.vmap(self.edge_linear))(edges)
 
         for block in self.encoder_blocks:
             key, subkey = jr.split(key)
@@ -351,25 +421,83 @@ class ProteinMPNN(eqx.Module):
                 edges=edges,
                 edge_index=edge_index,
                 enable_dropout=enable_dropout,
+                mask_edges=None,
+                mask_nodes=None,
                 key=subkey,
             )
 
-        return nodes, edges
+        return nodes, edges, edge_index
+
+    def decode(
+        self,
+        sequence: Int[Array, " n"],
+        nodes: Float[Array, "n dim"],
+        edges: Float[Array, "n k dim"],
+        edge_index: Int[Array, "n k"],
+        mask_nodes: Bool[Array, " n"],
+        mask_edges: Bool[Array, "n k"],
+        enable_dropout: bool,
+        key: PRNGKeyArray,
+    ) -> Float[Array, "n dim"]:
+        n, dim = nodes.shape
+        device = nodes.device
+
+        sequence_emb = self.sequence_embedding(sequence)
+
+        sequence_emb = jnp.concat(
+            [edges, gather_nodes(sequence_emb, edge_index)], axis=-1
+        )
+
+        encoder_edge_emb = jnp.concat(
+            [
+                edges,
+                gather_nodes(
+                    jnp.zeros(shape=(n, dim), device=device), edge_index=edge_index
+                ),
+                gather_nodes(nodes, edge_index=edge_index),
+            ]
+        )
+
+        keys = jr.split(key, len(self.decoder_blocks))
+        for key_, block in zip(keys, self.decoder_blocks, strict=True):
+            edge_emb = jnp.concat(
+                [sequence_emb, gather_nodes(nodes, edge_index=edge_index)]
+            )
+            edge_emb = sequence_emb + encoder_edge_emb
+            nodes = block(
+                nodes=nodes,
+                edges=edge_emb,
+                mask_nodes=mask_nodes,
+                mask_edges=mask_edges,
+                enable_dropout=enable_dropout,
+                key=key_,
+            )
+
+        logits = self.linear_out(nodes)
+        return logits
 
     def __call__(
         self,
         pos: Float[Array, "n 4 3"],
-        edges: Float[Array, "n k eidim"],
-        edge_index: Int[Array, "n k"],
+        sequence: Int[Array, " n"],
         enable_dropout: bool,
         key: PRNGKeyArray,
     ) -> Float[Array, "n vocab"]:
         key1, key2 = jr.split(key, 2)
 
-        nodes, edges = self.encode(
+        nodes, edges, edge_index = self.encode(
             pos=pos,
-            edges=edges,
-            edge_index=edge_index,
             enable_dropout=enable_dropout,
             key=key1,
         )
+
+        nodes = self.decode(
+            sequence=sequence,
+            nodes=nodes,
+            edges=edges,
+            edge_index=edge_index,
+            enable_dropout=enable_dropout,
+            key=key2,
+        )
+
+        return nodes
