@@ -44,8 +44,8 @@ def radial_basis_function(
 
 
 def gather_edges(
-    edges: Float[Array, "n n dim"], edge_index: Int[Array, "n k"]
-) -> Float[Array, "n k dim"]:
+    edges: Float[Array, "n n ..."], edge_index: Int[Array, "n k"]
+) -> Float[Array, "n k ..."]:
     """Gather edge features at neighbor indices."""
     n, k = edge_index.shape
     i_idx = jnp.arange(n)[:, None]
@@ -63,7 +63,16 @@ def gather_nodes(
     return neighbors
 
 
-class PositionalEmbedding(eqx.Module):
+def gather_chain_mask(
+    chain_labels: Int[Array, " n"], edge_index: Int[Array, "n k"]
+) -> Bool[Array, "n k"]:
+    difference = (chain_labels[:, None] - chain_labels[None, :]) == 0
+    edges = gather_edges(difference, edge_index)
+    return edges
+
+
+class PositionalEncodings(eqx.Module):
+    max_offset: int
     linear: nn.Linear
 
     def __init__(
@@ -75,14 +84,117 @@ class PositionalEmbedding(eqx.Module):
     def __call__(
         self,
         residue_index: Int[Array, " n"],
-        edge_index: Int[Array, " n k"],
+        edge_index: Int[Array, "n k"],
+        chain_mask: Bool[Array, "n k"],
     ) -> Float[Array, " n ne dim"]:
-        offset = residue_index[:, None] - residue_index[None, :]
-        offset = gather_edges(offset.astype(jnp.int32), edge_index)
-
-        clipped = jnp.clip(offset - self.max_offset, 0, 2 * self.max_offset + 1)
+        offset: Int[Array, "n k"] = gather_edges(
+            residue_index[:, None] - residue_index[None, :], edge_index
+        )
+        clipped = jnp.clip(
+            offset + self.max_offset, min=0, max=2 * self.max_offset
+        ) * chain_mask + (1 - chain_mask) * (2 * self.max_offset + 1)
         one_hot = jax.nn.one_hot(clipped, 2 * self.max_offset + 1 + 1)
-        return self.linear(one_hot)
+        return jax.vmap(jax.vmap(self.linear))(one_hot)
+
+
+def virtual_cb_pos(backbone_pos: Float[Array, "n 4 3"]) -> Float[Array, "n 3"]:
+    ca = backbone_pos[:, constants.ATOM_INDICES["CA"], :]
+    b = ca - backbone_pos[:, constants.ATOM_INDICES["N"], :]
+    c = backbone_pos[:, constants.ATOM_INDICES["C"], :] - ca
+    a = jnp.cross(b, c)
+    cb = -0.58273431 * a + 0.56802827 * b - 0.54067466 * c + ca
+    return cb
+
+
+def backbone_features(
+    backbone_pos: Float[Array, "n 4 3"],
+    dmin: float = 2.0,
+    dmax: float = 22.0,
+    rbf_dim: int = 16,
+    k_neighbors: int = 30,
+) -> tuple[Float[Array, "n n dim"], Int[Array, "n k"]]:
+    """Compute backbone features for a protein structure."""
+    ca = backbone_pos[:, constants.ATOM_INDICES["CA"], :]
+    ca_distances = pairwise_distances(ca, ca)
+    ca_distances, edge_index = mink_neighbors(ca_distances, k=k_neighbors)
+
+    cb = virtual_cb_pos(backbone_pos)
+    pos: Float[Array, "n 5 3"] = jnp.concat([backbone_pos, cb[:, None, :]], axis=1)
+
+    radial_bases = [
+        radial_basis_function(ca_distances, dmin=dmin, dmax=dmax, dim=rbf_dim)
+    ]
+    for atom1, atom2 in constants.ATOM_PAIR_RBFS:
+        idx1 = constants.ATOM_INDICES[atom1]
+        idx2 = constants.ATOM_INDICES[atom2]
+        d = pairwise_distances(pos[:, idx1, :], pos[:, idx2, :])
+        d = gather_edges(d, edge_index)
+        rbf = radial_basis_function(d, dmin=dmin, dmax=dmax, dim=rbf_dim)
+        radial_bases.append(rbf)
+
+    return einops.rearrange(radial_bases, "b n1 n2 d -> n1 n2 (b d)"), edge_index
+
+
+class FeatureEmbedding(eqx.Module):
+    rbf_dim: int
+    rbf_dmin: float
+    rbf_dmax: float
+    k: int
+
+    positional_encoding: PositionalEncodings
+    edge_embedding: nn.Linear
+    edge_norm: nn.LayerNorm
+
+    def __init__(
+        self,
+        dim: int,
+        rbf_dmin: float = 2.0,
+        rbf_dmax: float = 22.0,
+        rbf_dim: int = 16,
+        num_pos_emb: int = 16,
+        k: int = 30,
+        *,
+        key: PRNGKeyArray,
+    ) -> None:
+        key1, key2 = jr.split(key)
+        self.rbf_dim = rbf_dim
+        self.rbf_dmin = rbf_dmin
+        self.rbf_dmax = rbf_dmax
+        self.k = k
+
+        self.edge_embedding = nn.Linear(
+            num_pos_emb + rbf_dim * 25, dim, use_bias=False, key=key1
+        )
+        self.edge_norm = nn.LayerNorm(dim)
+        self.positional_encoding = PositionalEncodings(num_pos_emb, key=key2)
+
+    def __call__(
+        self,
+        backbone_pos: Float[Array, "n 4 3"],
+        residue_index: Int[Array, " n"],
+        chain_labels: Float[Array, " n"],
+    ) -> tuple[Float[Array, "n k dim"], Int[Array, "n k"]]:
+        radial_basis, edge_index = backbone_features(
+            backbone_pos,
+            dmin=self.rbf_dim,
+            dmax=self.rbf_dmax,
+            rbf_dim=self.rbf_dim,
+            k_neighbors=self.k,
+        )
+
+        chain_mask = gather_chain_mask(chain_labels, edge_index)
+
+        positional_emb = self.positional_encoding(
+            residue_index=residue_index,
+            edge_index=edge_index,
+            chain_mask=chain_mask,
+        )
+
+        edges = jnp.concat([positional_emb, radial_basis], axis=-1)
+        edges = jax.vmap(jax.vmap(self.edge_embedding))(edges)
+        edges = jax.vmap(jax.vmap(self.edge_norm))(edges)
+
+        return edges, edge_index
 
 
 class FeedForward(eqx.Module):
@@ -269,86 +381,6 @@ class DecoderBlock(eqx.Module):
         out_nodes = self.norm2(out_nodes + message)
 
         return out_nodes * einops.rearrange(mask_nodes, "n -> n ()")
-
-
-def backbone_features(
-    backbone_pos: Float[Array, "n 4 3"],
-    dmin: float = 2.0,
-    dmax: float = 22.0,
-    rbf_dim: int = 16,
-    k_neighbors: int = 30,
-) -> tuple[Float[Array, "n n dim"], Int[Array, "n k"]]:
-    """Compute backbone features for a protein structure."""
-    ca = backbone_pos[:, constants.ATOM_INDICES["CA"], :]
-    ca_distances = pairwise_distances(ca, ca)
-    ca_distances, edge_index = mink_neighbors(ca_distances, k=k_neighbors)
-
-    b = ca - backbone_pos[:, constants.ATOM_INDICES["N"], :]
-    c = backbone_pos[:, constants.ATOM_INDICES["C"], :] - ca
-    a = jnp.cross(b, c)
-    cb = -0.58273431 * a + 0.56802827 * b - 0.54067466 * c + ca
-
-    backbone_pos = jnp.concat([backbone_pos, cb[:, None, :]], axis=1)
-
-    radial_basis_ = [
-        radial_basis_function(ca_distances, dmin=dmin, dmax=dmax, dim=rbf_dim)
-    ]
-    for atom1, atom2 in constants.ATOM_PAIR_RBFS:
-        idx1 = constants.ATOM_INDICES[atom1]
-        idx2 = constants.ATOM_INDICES[atom2]
-        d = pairwise_distances(backbone_pos[:, idx1, :], backbone_pos[:, idx2, :])
-        d = gather_edges(d, edge_index)
-        rbf = radial_basis_function(d, dmin=dmin, dmax=dmax, dim=rbf_dim)
-        radial_basis_.append(rbf)
-
-    radial_basis = einops.rearrange(radial_basis_, "b n1 n2 d -> n1 n2 (b d)")
-
-    return radial_basis, edge_index
-
-
-class FeatureEmbedding(eqx.Module):
-    rbf_dim: int
-    rbf_dmin: float
-    rbf_dmax: float
-    k: int
-
-    edge_embedding: nn.Linear
-    edge_norm: nn.LayerNorm
-
-    def __init__(
-        self,
-        in_edge_dim: int,
-        dim: int,
-        pos_emb_dim: int,
-        rbf_dmin: float = 2.0,
-        rbf_dmax: float = 22.0,
-        rbf_dim: int = 16,
-        k: int = 30,
-        *,
-        key: PRNGKeyArray,
-    ) -> None:
-        key1, key2 = jr.split(key)
-        self.rbf_dim = rbf_dim
-        self.rbf_dmin = rbf_dmin
-        self.rbf_dmax = rbf_dmax
-        self.k = k
-
-        self.edge_embedding = nn.Linear(in_edge_dim, dim, use_bias=False, key=key1)
-        self.edge_norm = nn.LayerNorm(dim)
-        self.positional_embedding = nn.Embedding(pos_emb_dim, key=key2)
-
-    def __call__(
-        self, backbone_pos: Float[Array, "n 4 3"]
-    ) -> tuple[Float[Array, "n n dim"], Int[Array, "n k"]]:
-        radial_basis, edge_index = backbone_features(
-            backbone_pos,
-            dmin=self.rbf_dim,
-            dmax=self.rbf_dmax,
-            rbf_dim=self.rbf_dim,
-            k_neighbors=self.k,
-        )
-
-        pass
 
 
 class ProteinMPNN(eqx.Module):
