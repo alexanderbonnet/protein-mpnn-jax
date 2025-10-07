@@ -221,7 +221,9 @@ class EncoderBlock(eqx.Module):
 
         message = self.feedforward(out_nodes)
         message = self.dropout1(message, key=key, inference=not enable_dropout)
+        message = message * einops.rearrange(mask_edges, "n k -> n k ()")
         out_nodes = self.norm2(out_nodes + message)
+        out_nodes = out_nodes * einops.rearrange(mask_nodes, "n -> n ()")
 
         message = jnp.concat(
             [
@@ -288,16 +290,14 @@ class DecoderBlock(eqx.Module):
 
         message = einops.reduce(message, "n k d -> n d", "sum") / self.scale
         message = self.dropout1(message, key=key, inference=not enable_dropout)
-        # don't forget the attention mask here !!
+        message = message * einops.rearrange(mask_edges, "n k -> n k ()")
         out_nodes = self.norm1(nodes + message)
 
         message = self.feedforward(out_nodes)
         message = self.dropout2(message, key=key, inference=not enable_dropout)
         out_nodes = self.norm2(out_nodes + message)
 
-        # don't forget the node mask !!
-
-        return out_nodes
+        return out_nodes * einops.rearrange(mask_nodes, "n -> n ()")
 
 
 class ProteinMPNN(eqx.Module):
