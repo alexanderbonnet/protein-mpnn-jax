@@ -198,41 +198,39 @@ class FeatureEmbedding(eqx.Module):
 
 
 class FeedForward(eqx.Module):
-    ff: nn.Sequential
+    linear_in: nn.Linear
+    linear_out: nn.Linear
 
     def __init__(self, dim: int, factor: int = 4, *, key: PRNGKeyArray) -> None:
         key1, key2 = jr.split(key, 2)
 
-        self.ff = nn.Sequential(
-            [
-                nn.Linear(dim, dim * factor, use_bias=False, key=key1),
-                nn.Lambda(jax.nn.gelu),
-                nn.Linear(dim * factor, dim, use_bias=False, key=key2),
-            ]
-        )
+        self.linear_in = nn.Linear(dim, dim * factor, key=key1)
+        self.linear_out = nn.Linear(dim * factor, dim, key=key2)
 
     def __call__(self, x: Float[Array, " n dim"]) -> Float[Array, " n dim"]:
-        return jax.vmap(self.ff)(x)
+        x = jax.vmap(self.linear_in)(x)
+        x = jax.nn.gelu(x)
+        return jax.vmap(self.linear_out)(x)
 
 
 class SubBlock(eqx.Module):
-    block: nn.Sequential
+    linear_in: nn.Linear
+    hidden: nn.Linear
+    linear_out: nn.Linear
 
     def __init__(self, in_dim: int, dim: int, *, key: PRNGKeyArray) -> None:
         key1, key2, key3 = jr.split(key, 3)
 
-        self.block = nn.Sequential(
-            [
-                nn.Linear(in_dim, dim, key=key1),
-                nn.Lambda(jax.nn.gelu),
-                nn.Linear(dim, dim, key=key2),
-                nn.Lambda(jax.nn.gelu),
-                nn.Linear(dim, dim, key=key3),
-            ]
-        )
+        self.linear_in = nn.Linear(in_dim, dim, key=key1)
+        self.hidden = nn.Linear(dim, dim, key=key2)
+        self.linear_out = nn.Linear(dim, dim, key=key3)
 
     def __call__(self, x: Float[Array, "n k in_dim"]) -> Float[Array, "n k dim"]:
-        return jax.vmap(jax.vmap(self.block))(x)
+        x = jax.vmap(jax.vmap(self.linear_in))(x)
+        x = jax.nn.gelu(x)
+        x = jax.vmap(jax.vmap(self.hidden))(x)
+        x = jax.nn.gelu(x)
+        return jax.vmap(jax.vamp(self.linear_out))(x)
 
 
 class EncoderBlock(eqx.Module):
@@ -386,9 +384,7 @@ class DecoderBlock(eqx.Module):
 class ProteinMPNN(eqx.Module):
     k: int
 
-    edge_embedding: nn.Linear
-    edge_norm: nn.Linear
-    positional_embedding: nn.Embedding
+    features: FeatureEmbedding
 
     edge_linear: nn.Linear
     encoder_blocks: list[EncoderBlock]
@@ -400,7 +396,6 @@ class ProteinMPNN(eqx.Module):
 
     def __init__(
         self,
-        in_edge_dim: int,
         dim: int,
         k: int,
         num_encoder_blocks: int,
@@ -410,36 +405,43 @@ class ProteinMPNN(eqx.Module):
         *,
         key: Array,
     ) -> None:
-        key1, key2, key3, key4, key5 = jr.split(key, 5)
+        key1, key2, key3, key4, key5, key6, key7 = jr.split(key, 7)
 
         self.k = k
 
-        self.edge_embedding = nn.Linear(in_edge_dim, dim, use_bias=False)
+        # feature embedding
+        self.features = FeatureEmbedding(dim=dim, k=k, key=key1)
 
         # encoder blocks
-        self.edge_linear = nn.Linear(dim, dim, key=key1)
+        self.edge_linear = nn.Linear(dim, dim, key=key3)
         self.encoder_blocks = [
             EncoderBlock(dim=dim, dropout_rate=dropout_rate, key=key)
-            for key in jr.split(key2, num_encoder_blocks)
+            for key in jr.split(key4, num_encoder_blocks)
         ]
 
         # decoder blocks
-        self.sequence_embedding = nn.Embedding(21, vocab, key=key3)
+        self.sequence_embedding = nn.Embedding(vocab, dim, key=key5)
         self.decoder_blocks = [
             DecoderBlock(dim=dim, dropout_rate=dropout_rate, key=key)
-            for key in jr.split(key4, num_decoder_blocks)
+            for key in jr.split(key6, num_decoder_blocks)
         ]
 
         # output
-        self.linear_out = nn.Linear(dim, vocab, key=key5)
+        self.linear_out = nn.Linear(dim, vocab, key=key7)
 
     def encode(
         self,
         pos: Float[Array, "n 4 3"],
+        residue_index: Int[Array, " n"],
+        chain_labels: Int[Array, " n"],
         enable_dropout: bool,
         key: PRNGKeyArray,
     ) -> tuple[Float[Array, "n dim"], Float[Array, "n k dim"]]:
-        edges, edge_index = backbone_features(pos, k_neighbors=self.k)
+        edges, edge_index = self.features(
+            backbone_pos=pos,
+            residue_index=residue_index,
+            chain_labels=chain_labels,
+        )
 
         n, _, in_edge_dim = edges.shape
         nodes = jnp.zeros((n, in_edge_dim), device=pos.device)
