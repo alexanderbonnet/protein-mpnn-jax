@@ -90,4 +90,7 @@ def update_eqx_with_state_dict(
 
     updated_leaves = [v for _, v in updated_path_vals]
     updated_module = jax.tree.unflatten(treedef, updated_leaves)
+
+    if not count == len(conversion_map):
+        raise ValueError("Did not find all keys in conversion map")
     return updated_module, count

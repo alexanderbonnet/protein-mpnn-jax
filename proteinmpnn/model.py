@@ -1,3 +1,7 @@
+"""
+NOTE: JAX uses approximate gelu by default, unlike PyTorch.
+"""
+
 import einops
 import equinox as eqx
 import jax
@@ -7,6 +11,10 @@ from equinox import nn
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from proteinmpnn import constants
+
+
+def gelu(x: Float[Array, " ..."]) -> Float[Array, " ..."]:
+    return jax.nn.gelu(x, approximate=False)
 
 
 def pairwise_distances(
@@ -132,7 +140,7 @@ def backbone_features(
         rbf = radial_basis_function(d, dmin=dmin, dmax=dmax, dim=rbf_dim)
         radial_bases.append(rbf)
 
-    return einops.rearrange(radial_bases, "b n1 n2 d -> n1 n2 (b d)"), edge_index
+    return jnp.concat(radial_bases, axis=-1), edge_index
 
 
 class FeatureEmbedding(eqx.Module):
@@ -176,7 +184,7 @@ class FeatureEmbedding(eqx.Module):
     ) -> tuple[Float[Array, "n k dim"], Int[Array, "n k"]]:
         radial_basis, edge_index = backbone_features(
             backbone_pos,
-            dmin=self.rbf_dim,
+            dmin=self.rbf_dmin,
             dmax=self.rbf_dmax,
             rbf_dim=self.rbf_dim,
             k_neighbors=self.k,
@@ -209,7 +217,7 @@ class FeedForward(eqx.Module):
 
     def __call__(self, x: Float[Array, " n dim"]) -> Float[Array, " n dim"]:
         x = jax.vmap(self.linear_in)(x)
-        x = jax.nn.gelu(x)
+        x = gelu(x)
         return jax.vmap(self.linear_out)(x)
 
 
@@ -227,10 +235,10 @@ class SubBlock(eqx.Module):
 
     def __call__(self, x: Float[Array, "n k in_dim"]) -> Float[Array, "n k dim"]:
         x = jax.vmap(jax.vmap(self.linear_in))(x)
-        x = jax.nn.gelu(x)
+        x = gelu(x)
         x = jax.vmap(jax.vmap(self.hidden))(x)
-        x = jax.nn.gelu(x)
-        return jax.vmap(jax.vamp(self.linear_out))(x)
+        x = gelu(x)
+        return jax.vmap(jax.vmap(self.linear_out))(x)
 
 
 class EncoderBlock(eqx.Module):
@@ -294,13 +302,13 @@ class EncoderBlock(eqx.Module):
             axis=-1,
         )
         message = self.in_block(message)
+        message = message * einops.rearrange(mask_edges, "n k -> n k ()")
         message = einops.reduce(message, "n k d -> n d", "sum") / self.scale
         message = self.dropout1(message, key=key, inference=not enable_dropout)
         out_nodes = jax.vmap(self.norm1)(nodes + message)
 
         message = self.feedforward(out_nodes)
         message = self.dropout1(message, key=key, inference=not enable_dropout)
-        message = message * einops.rearrange(mask_edges, "n k -> n k ()")
         out_nodes = jax.vmap(self.norm2)(out_nodes + message)
         out_nodes = out_nodes * einops.rearrange(mask_nodes, "n -> n ()")
 
@@ -435,6 +443,8 @@ class ProteinMPNN(eqx.Module):
         residue_index: Int[Array, " n"],
         chain_labels: Int[Array, " n"],
         enable_dropout: bool,
+        mask_nodes: Bool[Array, " n"],
+        mask_edges: Bool[Array, "n k"],
         key: PRNGKeyArray,
     ) -> tuple[Float[Array, "n dim"], Float[Array, "n k dim"]]:
         edges, edge_index = self.features(
@@ -448,16 +458,16 @@ class ProteinMPNN(eqx.Module):
 
         edges = jax.vmap(jax.vmap(self.edge_linear))(edges)
 
-        for block in self.encoder_blocks:
-            key, subkey = jr.split(key)
+        keys = jr.split(key, len(self.encoder_blocks))
+        for key_, block in zip(keys, self.encoder_blocks, strict=True):
             nodes, edges = block(
                 nodes=nodes,
                 edges=edges,
                 edge_index=edge_index,
                 enable_dropout=enable_dropout,
-                mask_edges=None,
-                mask_nodes=None,
-                key=subkey,
+                mask_edges=mask_edges,
+                mask_nodes=mask_nodes,
+                key=key_,
             )
 
         return nodes, edges, edge_index
@@ -470,13 +480,14 @@ class ProteinMPNN(eqx.Module):
         edge_index: Int[Array, "n k"],
         mask_nodes: Bool[Array, " n"],
         mask_edges: Bool[Array, "n k"],
+        decoding_order: Int[Array, " n"],
         enable_dropout: bool,
         key: PRNGKeyArray,
     ) -> Float[Array, "n dim"]:
         n, dim = nodes.shape
         device = nodes.device
 
-        sequence_emb = self.sequence_embedding(sequence)
+        sequence_emb = jax.vmap(self.sequence_embedding)(sequence)
 
         sequence_emb = jnp.concat(
             [edges, gather_nodes(sequence_emb, edge_index)], axis=-1
@@ -489,7 +500,18 @@ class ProteinMPNN(eqx.Module):
                     jnp.zeros(shape=(n, dim), device=device), edge_index=edge_index
                 ),
                 gather_nodes(nodes, edge_index=edge_index),
-            ]
+            ],
+            axis=-1,
+        )
+
+        # success until here
+
+        permutation_matrix_reverse = jax.nn.one_hot(decoding_order, n)
+        order_mask_backward = jnp.einsum(
+            "ij, iq, jp -> qp",
+            1 - jnp.triu(jnp.ones((n, n))),
+            permutation_matrix_reverse,
+            permutation_matrix_reverse,
         )
 
         keys = jr.split(key, len(self.decoder_blocks))
@@ -513,6 +535,10 @@ class ProteinMPNN(eqx.Module):
     def __call__(
         self,
         pos: Float[Array, "n 4 3"],
+        residue_index: Int[Array, " n"],
+        chain_labels: Int[Array, " n"],
+        mask_nodes: Bool[Array, " n"],
+        mask_edges: Bool[Array, "n k"],
         sequence: Int[Array, " n"],
         enable_dropout: bool,
         key: PRNGKeyArray,
@@ -521,6 +547,10 @@ class ProteinMPNN(eqx.Module):
 
         nodes, edges, edge_index = self.encode(
             pos=pos,
+            residue_index=residue_index,
+            chain_labels=chain_labels,
+            mask_edges=mask_edges,
+            mask_nodes=mask_nodes,
             enable_dropout=enable_dropout,
             key=key1,
         )
@@ -529,6 +559,8 @@ class ProteinMPNN(eqx.Module):
             sequence=sequence,
             nodes=nodes,
             edges=edges,
+            mask_nodes=mask_nodes,
+            mask_edges=mask_edges,
             edge_index=edge_index,
             enable_dropout=enable_dropout,
             key=key2,
