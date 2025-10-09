@@ -367,7 +367,6 @@ class DecoderBlock(eqx.Module):
         edges: Float[Array, "n k dim"],
         enable_dropout: bool,
         mask_nodes: Bool[Array, " n"],
-        mask_edges: Bool[Array, "n k"],
         key: PRNGKeyArray,
     ) -> Float[Array, "n dim"]:
         _, k, _ = edges.shape
@@ -379,14 +378,40 @@ class DecoderBlock(eqx.Module):
 
         message = einops.reduce(message, "n k d -> n d", "sum") / self.scale
         message = self.dropout1(message, key=key, inference=not enable_dropout)
-        message = message * einops.rearrange(mask_edges, "n k -> n k ()")
-        out_nodes = self.norm1(nodes + message)
+        out_nodes = jax.vmap(self.norm1)(nodes + message)
 
         message = self.feedforward(out_nodes)
         message = self.dropout2(message, key=key, inference=not enable_dropout)
-        out_nodes = self.norm2(out_nodes + message)
+        out_nodes = jax.vmap(self.norm2)(out_nodes + message)
 
         return out_nodes * einops.rearrange(mask_nodes, "n -> n ()")
+
+
+def build_decoding_attention_mask(
+    decoding_order: Int[Array, " n"], edge_index: Int[Array, "n k"]
+) -> Float[Array, "n k"]:
+    n, device = decoding_order.shape[0], decoding_order.device
+    arr = jnp.zeros((n, n), device=device)
+    current = jnp.zeros((n,), device=device)
+    for k in range(1, n):
+        current = current + jax.nn.one_hot(decoding_order[k - 1], n)
+        arr = arr.at[decoding_order[k]].set(current)
+    return jnp.take_along_axis(arr, edge_index, axis=1)
+
+
+def build_forward_backward_mask(
+    decoding_order: Int[Array, " n"],
+    edge_index: Int[Array, "n k"],
+    mask: Bool[Array, " n"],
+) -> tuple[Float[Array, "n k"], Float[Array, "n k"]]:
+    decoding_attention_mask = build_decoding_attention_mask(decoding_order, edge_index)
+
+    mask = einops.rearrange(mask, "n -> n ()")
+
+    mask_backward = decoding_attention_mask * mask
+    mask_forward = (1.0 - decoding_attention_mask) * mask
+
+    return mask_backward, mask_forward
 
 
 class ProteinMPNN(eqx.Module):
@@ -444,7 +469,6 @@ class ProteinMPNN(eqx.Module):
         chain_labels: Int[Array, " n"],
         enable_dropout: bool,
         mask_nodes: Bool[Array, " n"],
-        mask_edges: Bool[Array, "n k"],
         key: PRNGKeyArray,
     ) -> tuple[Float[Array, "n dim"], Float[Array, "n k dim"]]:
         edges, edge_index = self.features(
@@ -458,15 +482,20 @@ class ProteinMPNN(eqx.Module):
 
         edges = jax.vmap(jax.vmap(self.edge_linear))(edges)
 
+        mask_edges = gather_nodes(einops.rearrange(mask_nodes, "n -> n ()"), edge_index)
+        mask_edges = einops.rearrange(mask_edges, "n k () -> n k") * einops.rearrange(
+            mask_nodes, "n -> n ()"
+        )
+
         keys = jr.split(key, len(self.encoder_blocks))
         for key_, block in zip(keys, self.encoder_blocks, strict=True):
             nodes, edges = block(
                 nodes=nodes,
                 edges=edges,
                 edge_index=edge_index,
-                enable_dropout=enable_dropout,
-                mask_edges=mask_edges,
                 mask_nodes=mask_nodes,
+                mask_edges=mask_edges,
+                enable_dropout=enable_dropout,
                 key=key_,
             )
 
@@ -479,7 +508,6 @@ class ProteinMPNN(eqx.Module):
         edges: Float[Array, "n k dim"],
         edge_index: Int[Array, "n k"],
         mask_nodes: Bool[Array, " n"],
-        mask_edges: Bool[Array, "n k"],
         decoding_order: Int[Array, " n"],
         enable_dropout: bool,
         key: PRNGKeyArray,
@@ -493,6 +521,17 @@ class ProteinMPNN(eqx.Module):
             [edges, gather_nodes(sequence_emb, edge_index)], axis=-1
         )
 
+        # success until here
+
+        mask_backward, mask_forward = build_forward_backward_mask(
+            decoding_order=decoding_order,
+            edge_index=edge_index,
+            mask=mask_nodes,
+        )
+
+        mask_backward = einops.rearrange(mask_backward, "n k -> n k ()")
+        mask_forward = einops.rearrange(mask_forward, "n k -> n k ()")
+
         encoder_edge_emb = jnp.concat(
             [
                 edges,
@@ -503,34 +542,26 @@ class ProteinMPNN(eqx.Module):
             ],
             axis=-1,
         )
-
-        # success until here
-
-        permutation_matrix_reverse = jax.nn.one_hot(decoding_order, n)
-        order_mask_backward = jnp.einsum(
-            "ij, iq, jp -> qp",
-            1 - jnp.triu(jnp.ones((n, n))),
-            permutation_matrix_reverse,
-            permutation_matrix_reverse,
-        )
+        encoder_edge_emb = encoder_edge_emb * mask_forward
 
         keys = jr.split(key, len(self.decoder_blocks))
         for key_, block in zip(keys, self.decoder_blocks, strict=True):
-            edge_emb = jnp.concat(
-                [sequence_emb, gather_nodes(nodes, edge_index=edge_index)]
+            sequence_edge_emb = jnp.concat(
+                [sequence_emb, gather_nodes(nodes, edge_index=edge_index)],
+                axis=-1,
             )
-            edge_emb = sequence_emb + encoder_edge_emb
+            sequence_edge_emb = sequence_edge_emb * mask_backward + encoder_edge_emb
+
             nodes = block(
                 nodes=nodes,
-                edges=edge_emb,
+                edges=sequence_edge_emb,
                 mask_nodes=mask_nodes,
-                mask_edges=mask_edges,
                 enable_dropout=enable_dropout,
                 key=key_,
             )
 
-        logits = self.linear_out(nodes)
-        return logits
+        logits = jax.vmap(self.linear_out)(nodes)
+        return jax.nn.log_softmax(logits)
 
     def __call__(
         self,
@@ -538,8 +569,8 @@ class ProteinMPNN(eqx.Module):
         residue_index: Int[Array, " n"],
         chain_labels: Int[Array, " n"],
         mask_nodes: Bool[Array, " n"],
-        mask_edges: Bool[Array, "n k"],
         sequence: Int[Array, " n"],
+        decoding_order: Int[Array, " n"],
         enable_dropout: bool,
         key: PRNGKeyArray,
     ) -> Float[Array, "n vocab"]:
@@ -549,7 +580,6 @@ class ProteinMPNN(eqx.Module):
             pos=pos,
             residue_index=residue_index,
             chain_labels=chain_labels,
-            mask_edges=mask_edges,
             mask_nodes=mask_nodes,
             enable_dropout=enable_dropout,
             key=key1,
@@ -560,8 +590,8 @@ class ProteinMPNN(eqx.Module):
             nodes=nodes,
             edges=edges,
             mask_nodes=mask_nodes,
-            mask_edges=mask_edges,
             edge_index=edge_index,
+            decoding_order=decoding_order,
             enable_dropout=enable_dropout,
             key=key2,
         )
