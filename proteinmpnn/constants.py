@@ -1,7 +1,5 @@
 """Useful constants."""
 
-EPS = 1e-6
-
 ATOM_INDICES = {
     "N": 0,
     "CA": 1,

@@ -20,26 +20,23 @@ def gelu(x: Float[Array, " ..."]) -> Float[Array, " ..."]:
 def pairwise_distances(
     x: Float[Array, "n d"],
     y: Float[Array, "n d"],
-    epsilon: float = constants.EPS,
+    epsilon: float = 1e-6,
 ) -> Float[Array, "n n"]:
     """Compute pairwise Euclidean distances between points."""
-    if x.shape != y.shape:
-        raise ValueError(
-            f"x and y must have the same shape, got {x.shape} != {y.shape}"
-        )
-
     diff = x[:, None, :] - y[None, :, :]
     return jnp.sqrt(jnp.sum(diff**2, axis=-1) + epsilon)
 
 
 def mink_neighbors(
-    x: Float[Array, "n n"], k: int
+    x: Float[Array, "n n"],
+    k: int,
+    mask: Bool[Array, " n"],
 ) -> tuple[Float[Array, "n k"], Int[Array, "n k"]]:
     """Compute a mask for the top-k values in each row of a matrix."""
-    if k <= 0:
-        raise ValueError("k must be positive")
-    n, _ = x.shape
-    distances, indices = jax.lax.top_k(-x, min(k, n))
+    mask = mask[None, :] * mask[:, None]
+    x = x * mask
+    x = x + (1 - mask) * jnp.max(x, axis=-1, keepdims=True)
+    distances, indices = jax.lax.top_k(-x, k)
     return -distances, indices
 
 
@@ -52,8 +49,8 @@ def radial_basis_function(
 
 
 def gather_edges(
-    edges: Float[Array, "n n ..."], edge_index: Int[Array, "n k"]
-) -> Float[Array, "n k ..."]:
+    edges: Float[Array, "n n dim"], edge_index: Int[Array, "n k"]
+) -> Float[Array, "n k dim"]:
     """Gather edge features at neighbor indices."""
     n, k = edge_index.shape
     i_idx = jnp.arange(n)[:, None]
@@ -116,6 +113,7 @@ def virtual_cb_pos(backbone_pos: Float[Array, "n 4 3"]) -> Float[Array, "n 3"]:
 
 def backbone_features(
     backbone_pos: Float[Array, "n 4 3"],
+    mask: Bool[Array, " n"],
     dmin: float = 2.0,
     dmax: float = 22.0,
     rbf_dim: int = 16,
@@ -124,7 +122,7 @@ def backbone_features(
     """Compute backbone features for a protein structure."""
     ca = backbone_pos[:, constants.ATOM_INDICES["CA"], :]
     ca_distances = pairwise_distances(ca, ca)
-    ca_distances, edge_index = mink_neighbors(ca_distances, k=k_neighbors)
+    ca_distances, edge_index = mink_neighbors(ca_distances, k=k_neighbors, mask=mask)
 
     cb = virtual_cb_pos(backbone_pos)
     pos: Float[Array, "n 5 3"] = jnp.concat([backbone_pos, cb[:, None, :]], axis=1)
@@ -181,6 +179,7 @@ class FeatureEmbedding(eqx.Module):
         backbone_pos: Float[Array, "n 4 3"],
         residue_index: Int[Array, " n"],
         chain_labels: Float[Array, " n"],
+        mask: Bool[Array, " n"],
     ) -> tuple[Float[Array, "n k dim"], Int[Array, "n k"]]:
         radial_basis, edge_index = backbone_features(
             backbone_pos,
@@ -188,6 +187,7 @@ class FeatureEmbedding(eqx.Module):
             dmax=self.rbf_dmax,
             rbf_dim=self.rbf_dim,
             k_neighbors=self.k,
+            mask=mask,
         )
 
         chain_mask = gather_chain_mask(chain_labels, edge_index)
@@ -302,16 +302,28 @@ class EncoderBlock(eqx.Module):
             axis=-1,
         )
         message = self.in_block(message)
+
+        # attention mask
         message = message * einops.rearrange(mask_edges, "n k -> n k ()")
+
+        # aggregate message
         message = einops.reduce(message, "n k d -> n d", "sum") / self.scale
+
+        # dropout and norm
         message = self.dropout1(message, key=key, inference=not enable_dropout)
         out_nodes = jax.vmap(self.norm1)(nodes + message)
 
+        # update representation
         message = self.feedforward(out_nodes)
-        message = self.dropout1(message, key=key, inference=not enable_dropout)
+
+        # dropout and norm
+        message = self.dropout2(message, key=key, inference=not enable_dropout)
         out_nodes = jax.vmap(self.norm2)(out_nodes + message)
+
+        # node mask
         out_nodes = out_nodes * einops.rearrange(mask_nodes, "n -> n ()")
 
+        # update edge representation
         message = jnp.concat(
             [
                 einops.repeat(out_nodes, "n d -> n k d", k=k),
@@ -320,6 +332,7 @@ class EncoderBlock(eqx.Module):
             ],
             axis=-1,
         )
+
         message = self.out_block(message)
         message = self.dropout3(message, key=key, inference=not enable_dropout)
         out_edges = jax.vmap(jax.vmap(self.norm3))(edges + message)
@@ -475,6 +488,7 @@ class ProteinMPNN(eqx.Module):
             backbone_pos=pos,
             residue_index=residue_index,
             chain_labels=chain_labels,
+            mask=mask_nodes,
         )
 
         n, _, in_edge_dim = edges.shape
@@ -551,7 +565,6 @@ class ProteinMPNN(eqx.Module):
                 axis=-1,
             )
             sequence_edge_emb = sequence_edge_emb * mask_backward + encoder_edge_emb
-
             nodes = block(
                 nodes=nodes,
                 edges=sequence_edge_emb,
@@ -596,4 +609,4 @@ class ProteinMPNN(eqx.Module):
             key=key2,
         )
 
-        return nodes
+        return nodes, None
