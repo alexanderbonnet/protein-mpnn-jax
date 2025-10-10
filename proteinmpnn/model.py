@@ -1,7 +1,3 @@
-"""
-NOTE: JAX uses approximate gelu by default, unlike PyTorch.
-"""
-
 import einops
 import equinox as eqx
 import jax
@@ -14,6 +10,7 @@ from proteinmpnn import constants
 
 
 def gelu(x: Float[Array, " ..."]) -> Float[Array, " ..."]:
+    """Matches the default PyTorch gelu implementation."""
     return jax.nn.gelu(x, approximate=False)
 
 
@@ -61,10 +58,9 @@ def gather_edges(
 def gather_nodes(
     nodes: Float[Array, "n dim"], edge_index: Int[Array, "n k"]
 ) -> Float[Array, "n k dim"]:
-    n, _ = nodes.shape
     edge_index = einops.rearrange(edge_index, "n k -> (n k)")
     neighbors = nodes[edge_index]
-    neighbors = einops.rearrange(neighbors, "(n k) d -> n k d", n=n)
+    neighbors = einops.rearrange(neighbors, "(n k) d -> n k d", n=nodes.shape[0])
     return neighbors
 
 
@@ -72,8 +68,7 @@ def gather_chain_mask(
     chain_labels: Int[Array, " n"], edge_index: Int[Array, "n k"]
 ) -> Bool[Array, "n k"]:
     difference = (chain_labels[:, None] - chain_labels[None, :]) == 0
-    edges = gather_edges(difference, edge_index)
-    return edges
+    return gather_edges(difference, edge_index)
 
 
 class PositionalEncodings(eqx.Module):
@@ -526,16 +521,10 @@ class ProteinMPNN(eqx.Module):
         enable_dropout: bool,
         key: PRNGKeyArray,
     ) -> Float[Array, "n dim"]:
-        n, dim = nodes.shape
-        device = nodes.device
-
         sequence_emb = jax.vmap(self.sequence_embedding)(sequence)
-
         sequence_emb = jnp.concat(
             [edges, gather_nodes(sequence_emb, edge_index)], axis=-1
         )
-
-        # success until here
 
         mask_backward, mask_forward = build_forward_backward_mask(
             decoding_order=decoding_order,
@@ -549,9 +538,7 @@ class ProteinMPNN(eqx.Module):
         encoder_edge_emb = jnp.concat(
             [
                 edges,
-                gather_nodes(
-                    jnp.zeros(shape=(n, dim), device=device), edge_index=edge_index
-                ),
+                gather_nodes(jnp.zeros_like(nodes), edge_index=edge_index),
                 gather_nodes(nodes, edge_index=edge_index),
             ],
             axis=-1,
@@ -609,4 +596,4 @@ class ProteinMPNN(eqx.Module):
             key=key2,
         )
 
-        return nodes, None
+        return nodes
