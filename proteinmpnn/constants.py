@@ -35,3 +35,5 @@ ATOM_PAIR_RBFS = [
     ("O", "CB"),
     ("C", "O"),
 ]
+
+ALPHABET = "ACDEFGHIKLMNPQRSTVWYX"

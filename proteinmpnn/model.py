@@ -3,6 +3,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import tqdm
 from equinox import nn
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
@@ -446,7 +447,7 @@ class ProteinMPNN(eqx.Module):
         *,
         key: Array,
     ) -> None:
-        key1, key2, key3, key4, key5, key6, key7 = jr.split(key, 7)
+        key1, key2, key3, key4, key5, key6 = jr.split(key, 6)
 
         self.k = k
 
@@ -454,21 +455,21 @@ class ProteinMPNN(eqx.Module):
         self.features = FeatureEmbedding(dim=dim, k=k, key=key1)
 
         # encoder blocks
-        self.edge_linear = nn.Linear(dim, dim, key=key3)
+        self.edge_linear = nn.Linear(dim, dim, key=key2)
         self.encoder_blocks = [
             EncoderBlock(dim=dim, dropout_rate=dropout_rate, key=key)
-            for key in jr.split(key4, num_encoder_blocks)
+            for key in jr.split(key3, num_encoder_blocks)
         ]
 
         # decoder blocks
-        self.sequence_embedding = nn.Embedding(vocab, dim, key=key5)
+        self.sequence_embedding = nn.Embedding(vocab, dim, key=key4)
         self.decoder_blocks = [
             DecoderBlock(dim=dim, dropout_rate=dropout_rate, key=key)
-            for key in jr.split(key6, num_decoder_blocks)
+            for key in jr.split(key5, num_decoder_blocks)
         ]
 
         # output
-        self.linear_out = nn.Linear(dim, vocab, key=key7)
+        self.linear_out = nn.Linear(dim, vocab, key=key6)
 
     def encode(
         self,
@@ -497,7 +498,7 @@ class ProteinMPNN(eqx.Module):
         )
 
         keys = jr.split(key, len(self.encoder_blocks))
-        for key_, block in zip(keys, self.encoder_blocks, strict=True):
+        for i, block in enumerate(self.encoder_blocks):
             nodes, edges = block(
                 nodes=nodes,
                 edges=edges,
@@ -505,7 +506,7 @@ class ProteinMPNN(eqx.Module):
                 mask_nodes=mask_nodes,
                 mask_edges=mask_edges,
                 enable_dropout=enable_dropout,
-                key=key_,
+                key=keys[i],
             )
 
         return nodes, edges, edge_index
@@ -531,7 +532,6 @@ class ProteinMPNN(eqx.Module):
             edge_index=edge_index,
             mask=mask_nodes,
         )
-
         mask_backward = einops.rearrange(mask_backward, "n k -> n k ()")
         mask_forward = einops.rearrange(mask_forward, "n k -> n k ()")
 
@@ -546,7 +546,7 @@ class ProteinMPNN(eqx.Module):
         encoder_edge_emb = encoder_edge_emb * mask_forward
 
         keys = jr.split(key, len(self.decoder_blocks))
-        for key_, block in zip(keys, self.decoder_blocks, strict=True):
+        for i, block in enumerate(self.decoder_blocks):
             sequence_edge_emb = jnp.concat(
                 [sequence_emb, gather_nodes(nodes, edge_index=edge_index)],
                 axis=-1,
@@ -557,11 +557,64 @@ class ProteinMPNN(eqx.Module):
                 edges=sequence_edge_emb,
                 mask_nodes=mask_nodes,
                 enable_dropout=enable_dropout,
-                key=key_,
+                key=keys[i],
             )
 
         logits = jax.vmap(self.linear_out)(nodes)
-        return jax.nn.log_softmax(logits)
+
+        # NOTE: return logits
+        return logits
+        # return jax.nn.log_softmax(logits)
+
+    # NOTE: add top-k sampling
+    def sample(
+        self,
+        pos: Float[Array, "n 4 3"],
+        residue_index: Int[Array, " n"],
+        chain_labels: Int[Array, " n"],
+        mask_nodes: Bool[Array, " n"],
+        decoding_order: Int[Array, " n"],
+        temperature: float = 1.0,
+        top_k: int = 1,
+        *,
+        key: PRNGKeyArray,
+    ) -> Int[Array, " n"]:
+        nodes, edges, edge_index = self.encode(
+            pos=pos,
+            residue_index=residue_index,
+            chain_labels=chain_labels,
+            mask_nodes=mask_nodes,
+            enable_dropout=False,
+            key=key,
+        )
+        n = nodes.shape[0]
+        sequence = jnp.zeros((n,), dtype=jnp.int32, device=pos.device)
+
+        keys = jr.split(key, n)
+        for i in tqdm.tqdm(range(n)):
+            key1, key2 = jr.split(keys[i])
+            logits = self.decode(
+                sequence=sequence,
+                nodes=nodes,
+                edges=edges,
+                edge_index=edge_index,
+                mask_nodes=mask_nodes,
+                decoding_order=decoding_order,
+                enable_dropout=False,
+                key=key1,
+            )
+            logits = logits / temperature
+
+            if top_k == 1:
+                sampled = jnp.argmax(logits[decoding_order[i]])
+            else:
+                probabilities = jax.nn.softmax(logits[decoding_order[i]] / temperature)
+                sampled = jr.choice(
+                    key=key2, a=logits.shape[-1], p=probabilities, shape=()
+                )
+            sequence = sequence.at[decoding_order[i]].set(sampled)
+
+        return sequence
 
     def __call__(
         self,

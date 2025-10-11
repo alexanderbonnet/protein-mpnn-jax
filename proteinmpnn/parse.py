@@ -4,25 +4,20 @@ import os
 import gemmi
 import jax.numpy as jnp
 from jax import Array
-from jaxtyping import Float
+from jaxtyping import Bool, Float, Int
 from loguru import logger
+
+from proteinmpnn import constants
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class ResidueStructure:
+class BackboneResidue:
     index: int
     carbon_alpha_pos: Float[Array, " 3"]
     carbon_pos: Float[Array, " 3"]
     nitrogen_pos: Float[Array, " 3"]
     oxygen_pos: Float[Array, " 3"]
     chain_index: int
-
-    @property
-    def carbon_beta(self):
-        b = self.carbon_alpha_pos - self.nitrogen_pos
-        c = self.carbon_pos - self.carbon_alpha_pos
-        a = jnp.cross(b, c)
-        return -0.58273431 * a + 0.56802827 * b - 0.54067466 * c + self.carbon_alpha_pos
 
 
 def read_structure(filepath: os.PathLike, use_assembly: bool = True) -> gemmi.Structure:
@@ -48,17 +43,19 @@ def read_structure(filepath: os.PathLike, use_assembly: bool = True) -> gemmi.St
     return structure
 
 
-def parse_structure(structure: gemmi.Structure) -> list[ResidueStructure]:
+# NOTE: adapt parsing for training i.e handling missing residues, etc...
+def parse_backbone(structure: gemmi.Structure) -> list[BackboneResidue]:
     """Parse a gemmi Structure into an AtomStructure object."""
     # only parse the first model
     model = structure[0]
 
     residues = []
     for i, chain in enumerate(model):
-        for residue in enumerate(chain.get_polymer()):
-            residue_index = residue.label_seq - 1  # zero-indexed
+        for residue in chain.get_polymer():
+            # zero-index the residue index
+            residue_index = residue.label_seq - 1
             atom_pos = {atom.name: atom.pos.tolist() for atom in residue}
-            residue_structure = ResidueStructure(
+            residue_structure = BackboneResidue(
                 index=residue_index,
                 carbon_alpha_pos=jnp.array(atom_pos["CA"], dtype=jnp.float32),
                 carbon_pos=jnp.array(atom_pos["C"], dtype=jnp.float32),
@@ -71,9 +68,32 @@ def parse_structure(structure: gemmi.Structure) -> list[ResidueStructure]:
     return residues
 
 
-def main():
-    print("Hello from protein-mpnn-jax!")
+# NOTE: add sequence parsing for training
+@dataclasses.dataclass(frozen=True, slots=True)
+class BackBoneTensors:
+    pos: Float[Array, "n 4 3"]
+    residue_index: Int[Array, " n"]
+    chain_labels: Int[Array, " n"]
+    mask: Bool[Array, " n"]
 
 
-if __name__ == "__main__":
-    main()
+def prepare_tensors(residues: list[BackboneResidue]) -> BackBoneTensors:
+    residue_index = jnp.array([r.index for r in residues], dtype=jnp.int32)
+    chain_labels = jnp.array([r.chain_index for r in residues], dtype=jnp.int32)
+    mask = jnp.ones_like(residue_index, dtype=jnp.bool)
+    pos = jnp.zeros(shape=(residue_index.shape[0], 4, 3))
+    pos = pos.at[:, constants.ATOM_INDICES["CA"], :].set(
+        [r.carbon_alpha_pos for r in residues]
+    )
+    pos = pos.at[:, constants.ATOM_INDICES["C"], :].set(
+        [r.carbon_pos for r in residues]
+    )
+    pos = pos.at[:, constants.ATOM_INDICES["O"], :].set(
+        [r.oxygen_pos for r in residues]
+    )
+    pos = pos.at[:, constants.ATOM_INDICES["N"], :].set(
+        [r.nitrogen_pos for r in residues]
+    )
+    return BackBoneTensors(
+        pos=pos, chain_labels=chain_labels, residue_index=residue_index, mask=mask
+    )

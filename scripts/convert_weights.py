@@ -1,7 +1,10 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 import torch
+
+from proteinmpnn import model as model_
 
 NUM_ENCODER_BLOCKS = 3
 NUM_DECODER_BLOCKS = 3
@@ -72,7 +75,7 @@ def update_eqx_with_state_dict(
     module: eqx.Module,
     state_dict: dict[str, torch.Tensor],
     conversion_map: dict[str, str],
-) -> tuple[eqx.Module, int]:
+) -> eqx.Module:
     path_vals, treedef = jax.tree.flatten_with_path(module)
     updated_path_vals = []
     count = 0
@@ -93,4 +96,19 @@ def update_eqx_with_state_dict(
 
     if not count == len(conversion_map):
         raise ValueError("Did not find all keys in conversion map")
-    return updated_module, count
+    return updated_module
+
+
+def main(config_path: str, weights_path: str, eqx_path: str, seed: int = 42) -> None:
+    model_config = ...
+    state_dict = torch.load(weights_path, map_location="cpu")["model_state_dict"]
+
+    model = model_.ProteinMPNN(**model_config, key=jr.PRNGKey(seed))
+    updated_model = update_eqx_with_state_dict(model, state_dict, conversion_map)
+    eqx.tree_serialise_leaves(eqx_path, updated_model)
+
+
+if __name__ == "__main__":
+    import fire
+
+    fire.Fire(main)

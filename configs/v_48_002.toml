@@ -1,0 +1,9 @@
+[seed]
+model = 42
+
+[model]
+dim = 128
+k = 16
+num_encoder_blocks = 3
+num_decoder_blocks = 3
+dropout = 0.0
