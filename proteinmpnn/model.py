@@ -601,6 +601,7 @@ class ProteinMPNN(eqx.Module):
 
     def sample(
         self,
+        sequence: Int[Array, " n"],
         pos: Float[Array, "n 4 3"],
         residue_index: Int[Array, " n"],
         chain_labels: Int[Array, " n"],
@@ -620,7 +621,6 @@ class ProteinMPNN(eqx.Module):
             key=key,
         )
         n = nodes.shape[0]
-        sequence = jnp.zeros((n,), dtype=jnp.int32, device=pos.device)
 
         keys = jr.split(key, n)
         for i in tqdm.tqdm(range(n)):

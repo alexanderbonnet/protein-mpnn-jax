@@ -1,6 +1,7 @@
 """Parsing utilities for protein structures."""
 
 import dataclasses
+from pathlib import Path
 
 import gemmi
 import jax.numpy as jnp
@@ -23,9 +24,9 @@ class BackboneResidue:
     chain_index: int
 
 
-def read_structure(filepath: str, use_assembly: bool = True) -> gemmi.Structure:
+def read_structure(filepath: str | Path, use_assembly: bool = True) -> gemmi.Structure:
     """Read and clean a structure from a PDB or mmCIF file. Optionally transform to biological assembly 1."""
-    structure = gemmi.read_structure(filepath)
+    structure = gemmi.read_structure(str(filepath))
     if use_assembly:
         how = gemmi.HowToNameCopiedChain.Dup
         try:
