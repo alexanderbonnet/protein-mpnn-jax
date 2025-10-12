@@ -1,7 +1,6 @@
 """Parsing utilities for protein structures."""
 
 import dataclasses
-import os
 
 import gemmi
 import jax.numpy as jnp
@@ -24,7 +23,7 @@ class BackboneResidue:
     chain_index: int
 
 
-def read_structure(filepath: os.PathLike, use_assembly: bool = True) -> gemmi.Structure:
+def read_structure(filepath: str, use_assembly: bool = True) -> gemmi.Structure:
     """Read and clean a structure from a PDB or mmCIF file. Optionally transform to biological assembly 1."""
     structure = gemmi.read_structure(filepath)
     if use_assembly:
@@ -57,7 +56,7 @@ def parse_backbone(structure: gemmi.Structure) -> list[BackboneResidue]:
     for i, chain in enumerate(model):
         for residue in chain.get_polymer():
             # zero-index the residue index
-            residue_index = residue.label_seq - 1
+            residue_index = residue.label_seq - 1  # type: ignore[operator]
             atom_pos = {atom.name: atom.pos.tolist() for atom in residue}
             residue_structure = BackboneResidue(
                 index=residue_index,

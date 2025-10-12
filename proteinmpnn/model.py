@@ -509,7 +509,11 @@ class ProteinMPNN(eqx.Module):
         enable_dropout: bool,
         mask_nodes: Bool[Array, " n"],
         key: PRNGKeyArray,
-    ) -> tuple[Float[Array, "n dim"], Float[Array, "n k dim"]]:
+    ) -> tuple[
+        Float[Array, "n dim"],
+        Float[Array, "n k dim"],
+        Int[Array, "n k"],
+    ]:
         edges, edge_index = self.features(
             backbone_pos=pos,
             residue_index=residue_index,
