@@ -640,10 +640,8 @@ class ProteinMPNN(eqx.Module):
             if top_k == 1:
                 sampled = jnp.argmax(logits[decoding_order[i]])
             else:
-                probabilities = jax.nn.softmax(logits[decoding_order[i]] / temperature)
-                sampled = jr.choice(
-                    key=key2, a=logits.shape[-1], p=probabilities, shape=()
-                )
+                probs = jax.nn.softmax(logits[decoding_order[i]] / temperature)
+                sampled = jr.choice(key=key2, a=logits.shape[-1], p=probs, shape=())
             sequence = sequence.at[decoding_order[i]].set(sampled)
 
         return sequence

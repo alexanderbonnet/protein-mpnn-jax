@@ -1,3 +1,8 @@
+"""Script to convert torch model weights to equinox."""
+
+import tomllib
+from pathlib import Path
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -99,11 +104,15 @@ def update_eqx_with_state_dict(
     return updated_module
 
 
-def main(config_path: str, weights_path: str, eqx_path: str, seed: int = 42) -> None:
-    model_config = ...
+def main(config_path: str, weights_path: str, eqx_path: str) -> None:
+    config = tomllib.loads(Path(config_path).read_text())
     state_dict = torch.load(weights_path, map_location="cpu")["model_state_dict"]
 
-    model = model_.ProteinMPNN(**model_config, key=jr.PRNGKey(seed))
+    model = model_.ProteinMPNN(
+        **config["model"],
+        # the key does not matter here as it will be supplied later anyway
+        key=jr.PRNGKey(0),
+    )
     updated_model = update_eqx_with_state_dict(model, state_dict, conversion_map)
     eqx.tree_serialise_leaves(eqx_path, updated_model)
 
