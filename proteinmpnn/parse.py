@@ -1,3 +1,5 @@
+"""Parsing utilities for protein structures."""
+
 import dataclasses
 import os
 
@@ -12,6 +14,8 @@ from proteinmpnn import constants
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class BackboneResidue:
+    """Container for a single residue's structural information."""
+
     index: int
     carbon_alpha_pos: Float[Array, " 3"]
     carbon_pos: Float[Array, " 3"]
@@ -71,6 +75,8 @@ def parse_backbone(structure: gemmi.Structure) -> list[BackboneResidue]:
 # NOTE: add sequence parsing for training
 @dataclasses.dataclass(frozen=True, slots=True)
 class BackBoneTensors:
+    """Container for tensors representing a protein backbone."""
+
     pos: Float[Array, "n 4 3"]
     residue_index: Int[Array, " n"]
     chain_labels: Int[Array, " n"]
@@ -78,6 +84,7 @@ class BackBoneTensors:
 
 
 def prepare_tensors(residues: list[BackboneResidue]) -> BackBoneTensors:
+    """Prepare tensors from a list of BackboneResidue objects."""
     residue_index = jnp.array([r.index for r in residues], dtype=jnp.int32)
     chain_labels = jnp.array([r.chain_index for r in residues], dtype=jnp.int32)
     mask = jnp.ones_like(residue_index, dtype=jnp.bool)
