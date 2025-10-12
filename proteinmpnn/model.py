@@ -304,15 +304,16 @@ class EncoderBlock(eqx.Module):
         nodes: Float[Array, "n dim"],
         edges: Float[Array, "n k dim"],
         edge_index: Int[Array, "n k"],
-        enable_dropout: bool,
         mask_nodes: Bool[Array, " n"],
         mask_edges: Bool[Array, "n k"],
+        enable_dropout: bool,
         key: PRNGKeyArray,
     ) -> tuple[Float[Array, "n dim"], Float[Array, "n k dim"]]:
-        _, k, _ = edges.shape
+        key1, key2, key3 = jr.split(key, 3)
+
         message = jnp.concat(
             [
-                einops.repeat(nodes, "n d -> n k d", k=k),
+                einops.repeat(nodes, "n d -> n k d", k=edges.shape[1]),
                 edges,
                 gather_nodes(nodes, edge_index),
             ],
@@ -327,14 +328,14 @@ class EncoderBlock(eqx.Module):
         message = einops.reduce(message, "n k d -> n d", "sum") / self.scale
 
         # dropout and norm
-        message = self.dropout1(message, key=key, inference=not enable_dropout)
+        message = self.dropout1(message, key=key1, inference=not enable_dropout)
         out_nodes = jax.vmap(self.norm1)(nodes + message)
 
         # update representation
         message = self.feedforward(out_nodes)
 
         # dropout and norm
-        message = self.dropout2(message, key=key, inference=not enable_dropout)
+        message = self.dropout2(message, key=key2, inference=not enable_dropout)
         out_nodes = jax.vmap(self.norm2)(out_nodes + message)
 
         # node mask
@@ -343,7 +344,7 @@ class EncoderBlock(eqx.Module):
         # update edge representation
         message = jnp.concat(
             [
-                einops.repeat(out_nodes, "n d -> n k d", k=k),
+                einops.repeat(out_nodes, "n d -> n k d", k=edges.shape[1]),
                 edges,
                 gather_nodes(out_nodes, edge_index),
             ],
@@ -351,7 +352,7 @@ class EncoderBlock(eqx.Module):
         )
 
         message = self.out_block(message)
-        message = self.dropout3(message, key=key, inference=not enable_dropout)
+        message = self.dropout3(message, key=key3, inference=not enable_dropout)
         out_edges = jax.vmap(jax.vmap(self.norm3))(edges + message)
         return out_nodes, out_edges
 
@@ -403,19 +404,20 @@ class DecoderBlock(eqx.Module):
         mask_nodes: Bool[Array, " n"],
         key: PRNGKeyArray,
     ) -> Float[Array, "n dim"]:
-        _, k, _ = edges.shape
+        key1, key2 = jr.split(key, 2)
+
         message = jnp.concat(
-            [einops.repeat(nodes, "n d -> n k d", k=k), edges],
+            [einops.repeat(nodes, "n d -> n k d", k=edges.shape[1]), edges],
             axis=-1,
         )
         message = self.block(message)
 
         message = einops.reduce(message, "n k d -> n d", "sum") / self.scale
-        message = self.dropout1(message, key=key, inference=not enable_dropout)
+        message = self.dropout1(message, key=key1, inference=not enable_dropout)
         out_nodes = jax.vmap(self.norm1)(nodes + message)
 
         message = self.feedforward(out_nodes)
-        message = self.dropout2(message, key=key, inference=not enable_dropout)
+        message = self.dropout2(message, key=key2, inference=not enable_dropout)
         out_nodes = jax.vmap(self.norm2)(out_nodes + message)
 
         return out_nodes * einops.rearrange(mask_nodes, "n -> n ()")
