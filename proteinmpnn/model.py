@@ -1,3 +1,5 @@
+"""Protein MPNN model implementation with JAX/Equinox."""
+
 import einops
 import equinox as eqx
 import jax
@@ -30,7 +32,9 @@ def mink_neighbors(
     k: int,
     mask: Bool[Array, " n"],
 ) -> tuple[Float[Array, "n k"], Int[Array, "n k"]]:
-    """Compute a mask for the top-k values in each row of a matrix."""
+    """Compute distances and edges indices for the k-nearest using a
+    distance matrix and a mask.
+    """
     mask = mask[None, :] * mask[:, None]
     x = x * mask
     x = x + (1 - mask) * jnp.max(x, axis=-1, keepdims=True)
@@ -41,6 +45,7 @@ def mink_neighbors(
 def radial_basis_function(
     x: Float[Array, "n k"], dmin: float, dmax: float, dim: int
 ) -> Float[Array, "n k dim"]:
+    """Compute Gaussian radial basis functions."""
     mu = jnp.linspace(dmin, dmax, dim, device=x.device)
     beta = (dim / (dmax - dmin)) ** 2
     return jnp.exp(-beta * (einops.rearrange(x, "n k -> n k ()") - mu) ** 2)
@@ -59,6 +64,10 @@ def gather_edges(
 def gather_nodes(
     nodes: Float[Array, "n dim"], edge_index: Int[Array, "n k"]
 ) -> Float[Array, "n k dim"]:
+    """Gather node features at neighbor indices.
+
+    Used to construct messages for edges.
+    """
     edge_index = einops.rearrange(edge_index, "n k -> (n k)")
     neighbors = nodes[edge_index]
     neighbors = einops.rearrange(neighbors, "(n k) d -> n k d", n=nodes.shape[0])
@@ -68,11 +77,14 @@ def gather_nodes(
 def gather_chain_mask(
     chain_labels: Int[Array, " n"], edge_index: Int[Array, "n k"]
 ) -> Bool[Array, "n k"]:
+    """Compute a mask indicating if edges are within the same chain."""
     difference = (chain_labels[:, None] - chain_labels[None, :]) == 0
     return gather_edges(difference, edge_index)
 
 
 class PositionalEncodings(eqx.Module):
+    """Positional encodings for residue indices and across different chains."""
+
     max_offset: int
     linear: nn.Linear
 
@@ -99,6 +111,7 @@ class PositionalEncodings(eqx.Module):
 
 
 def virtual_cb_pos(backbone_pos: Float[Array, "n 4 3"]) -> Float[Array, "n 3"]:
+    """Compute ideal c-beta positions from backbone atoms."""
     ca = backbone_pos[:, constants.ATOM_INDICES["CA"], :]
     b = ca - backbone_pos[:, constants.ATOM_INDICES["N"], :]
     c = backbone_pos[:, constants.ATOM_INDICES["C"], :] - ca
@@ -138,6 +151,8 @@ def backbone_features(
 
 
 class FeatureEmbedding(eqx.Module):
+    """Embedding of structural features for the MPNN."""
+
     rbf_dim: int
     rbf_dmin: float
     rbf_dmax: float
@@ -202,6 +217,8 @@ class FeatureEmbedding(eqx.Module):
 
 
 class FeedForward(eqx.Module):
+    """Simple feedforward layer used in the encoder and decoder blocks."""
+
     linear_in: nn.Linear
     linear_out: nn.Linear
 
@@ -218,6 +235,8 @@ class FeedForward(eqx.Module):
 
 
 class SubBlock(eqx.Module):
+    """A 3 layer MLP used to update edge messages."""
+
     linear_in: nn.Linear
     hidden: nn.Linear
     linear_out: nn.Linear
@@ -230,14 +249,16 @@ class SubBlock(eqx.Module):
         self.linear_out = nn.Linear(dim, dim, key=key3)
 
     def __call__(self, x: Float[Array, "n k in_dim"]) -> Float[Array, "n k dim"]:
-        x = jax.vmap(jax.vmap(self.linear_in))(x)
-        x = gelu(x)
-        x = jax.vmap(jax.vmap(self.hidden))(x)
-        x = gelu(x)
+        x = gelu(jax.vmap(jax.vmap(self.linear_in))(x))
+        x = gelu(jax.vmap(jax.vmap(self.hidden))(x))
         return jax.vmap(jax.vmap(self.linear_out))(x)
 
 
 class EncoderBlock(eqx.Module):
+    """Encoder block for the MPNN. Updates node and edge representations
+    using structural features.
+    """
+
     scale: float
 
     in_block: SubBlock
@@ -336,6 +357,10 @@ class EncoderBlock(eqx.Module):
 
 
 class DecoderBlock(eqx.Module):
+    """Decoder block for the MPNN. Updates node representations using
+    structural and sequence features.
+    """
+
     scale: float
 
     block: SubBlock
@@ -399,6 +424,7 @@ class DecoderBlock(eqx.Module):
 def build_decoding_attention_mask(
     decoding_order: Int[Array, " n"], edge_index: Int[Array, "n k"]
 ) -> Float[Array, "n k"]:
+    """Helper function used to build the forward and backward attention masks."""
     n, device = decoding_order.shape[0], decoding_order.device
     arr = jnp.zeros((n, n), device=device)
     current = jnp.zeros((n,), device=device)
@@ -413,10 +439,10 @@ def build_forward_backward_mask(
     edge_index: Int[Array, "n k"],
     mask: Bool[Array, " n"],
 ) -> tuple[Float[Array, "n k"], Float[Array, "n k"]]:
+    """Build forward and backward attention masks for the decoder."""
     decoding_attention_mask = build_decoding_attention_mask(decoding_order, edge_index)
 
     mask = einops.rearrange(mask, "n -> n ()")
-
     mask_backward = decoding_attention_mask * mask
     mask_forward = (1.0 - decoding_attention_mask) * mask
 
@@ -424,6 +450,8 @@ def build_forward_backward_mask(
 
 
 class ProteinMPNN(eqx.Module):
+    """The ProteinMPNN model."""
+
     k: int
 
     features: FeatureEmbedding
@@ -562,11 +590,9 @@ class ProteinMPNN(eqx.Module):
 
         logits = jax.vmap(self.linear_out)(nodes)
 
-        # NOTE: return logits
-        return logits
         # return jax.nn.log_softmax(logits)
+        return logits
 
-    # NOTE: add top-k sampling
     def sample(
         self,
         pos: Float[Array, "n 4 3"],
