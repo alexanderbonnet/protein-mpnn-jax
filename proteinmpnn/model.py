@@ -597,7 +597,9 @@ class ProteinMPNN(eqx.Module):
         residue_index: Int[Array, " n"],
         chain_labels: Int[Array, " n"],
         mask_nodes: Bool[Array, " n"],
+        # decoding order is used when fixing residues and/or chains
         decoding_order: Int[Array, " n"],
+        decoding_start_index: int = 0,
         temperature: float = 1.0,
         top_k: int = 1,
         *,
@@ -614,7 +616,7 @@ class ProteinMPNN(eqx.Module):
         n = nodes.shape[0]
 
         keys = jr.split(key, n)
-        for i in tqdm.tqdm(range(n)):
+        for i in tqdm.tqdm(range(decoding_start_index, n)):
             key1, key2 = jr.split(keys[i])
             logits = self.decode(
                 sequence=sequence,
