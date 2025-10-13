@@ -85,13 +85,13 @@ def gather_chain_mask(
 class PositionalEncodings(eqx.Module):
     """Positional encodings for residue indices and across different chains."""
 
-    max_offset: int
+    max_relative_offset: int
     linear: nn.Linear
 
     def __init__(
         self, dim: int, max_relative_offset: int = 32, *, key: PRNGKeyArray
     ) -> None:
-        self.max_offset = max_relative_offset
+        self.max_relative_offset = max_relative_offset
         self.linear = nn.Linear(2 * max_relative_offset + 1 + 1, dim, key=key)
 
     def __call__(
@@ -104,9 +104,9 @@ class PositionalEncodings(eqx.Module):
             residue_index[:, None] - residue_index[None, :], edge_index
         )
         clipped = jnp.clip(
-            offset + self.max_offset, min=0, max=2 * self.max_offset
-        ) * chain_mask + (1 - chain_mask) * (2 * self.max_offset + 1)
-        one_hot = jax.nn.one_hot(clipped, 2 * self.max_offset + 1 + 1)
+            offset + self.max_relative_offset, min=0, max=2 * self.max_relative_offset
+        ) * chain_mask + (1 - chain_mask) * (2 * self.max_relative_offset + 1)
+        one_hot = jax.nn.one_hot(clipped, 2 * self.max_relative_offset + 1 + 1)
         return jax.vmap(jax.vmap(self.linear))(one_hot)
 
 
@@ -454,8 +454,6 @@ def build_forward_backward_mask(
 class ProteinMPNN(eqx.Module):
     """The ProteinMPNN model."""
 
-    k: int
-
     features: FeatureEmbedding
 
     edge_linear: nn.Linear
@@ -479,23 +477,23 @@ class ProteinMPNN(eqx.Module):
     ) -> None:
         key1, key2, key3, key4, key5, key6 = jr.split(key, 6)
 
-        self.k = k
-
         # feature embedding
         self.features = FeatureEmbedding(dim=dim, k=k, key=key1)
 
         # encoder blocks
         self.edge_linear = nn.Linear(dim, dim, key=key2)
+
+        keys = jr.split(key3, num_encoder_blocks)
         self.encoder_blocks = [
-            EncoderBlock(dim=dim, dropout_rate=dropout_rate, key=key)
-            for key in jr.split(key3, num_encoder_blocks)
+            EncoderBlock(dim=dim, dropout_rate=dropout_rate, key=key) for key in keys
         ]
 
         # decoder blocks
         self.sequence_embedding = nn.Embedding(vocab, dim, key=key4)
+
+        keys = jr.split(key5, num_decoder_blocks)
         self.decoder_blocks = [
-            DecoderBlock(dim=dim, dropout_rate=dropout_rate, key=key)
-            for key in jr.split(key5, num_decoder_blocks)
+            DecoderBlock(dim=dim, dropout_rate=dropout_rate, key=key) for key in keys
         ]
 
         # output
