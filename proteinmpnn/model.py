@@ -18,9 +18,7 @@ def gelu(x: Float[Array, " ..."]) -> Float[Array, " ..."]:
 
 
 def pairwise_distances(
-    x: Float[Array, "n d"],
-    y: Float[Array, "n d"],
-    epsilon: float = 1e-6,
+    x: Float[Array, "n d"], y: Float[Array, "n d"], epsilon: float = 1e-6
 ) -> Float[Array, "n n"]:
     """Compute pairwise Euclidean distances between points."""
     diff = x[:, None, :] - y[None, :, :]
@@ -28,9 +26,7 @@ def pairwise_distances(
 
 
 def mink_neighbors(
-    x: Float[Array, "n n"],
-    k: int,
-    mask: Bool[Array, " n"],
+    x: Float[Array, "n n"], k: int, mask: Bool[Array, " n"]
 ) -> tuple[Float[Array, "n k"], Int[Array, "n k"]]:
     """Compute distances and edges indices for the k-nearest using a
     distance matrix and a mask.
@@ -204,9 +200,7 @@ class FeatureEmbedding(eqx.Module):
         chain_mask = gather_chain_mask(chain_labels, edge_index)
 
         positional_emb = self.positional_encoding(
-            residue_index=residue_index,
-            edge_index=edge_index,
-            chain_mask=chain_mask,
+            residue_index=residue_index, edge_index=edge_index, chain_mask=chain_mask
         )
 
         edges = jnp.concat([positional_emb, radial_basis], axis=-1)
@@ -580,8 +574,7 @@ class ProteinMPNN(eqx.Module):
         keys = jr.split(key, len(self.decoder_blocks))
         for i, block in enumerate(self.decoder_blocks):
             sequence_edge_emb = jnp.concat(
-                [sequence_emb, gather_nodes(nodes, edge_index=edge_index)],
-                axis=-1,
+                [sequence_emb, gather_nodes(nodes, edge_index=edge_index)], axis=-1
             )
             sequence_edge_emb = sequence_edge_emb * mask_backward + encoder_edge_emb
             nodes = block(
