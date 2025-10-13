@@ -3,7 +3,7 @@ model = 42
 
 [model]
 dim = 128
-k = 16
+k = 64
 num_encoder_blocks = 3
 num_decoder_blocks = 3
 dropout_rate = 0.0
