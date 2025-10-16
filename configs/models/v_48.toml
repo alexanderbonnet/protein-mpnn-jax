@@ -1,0 +1,11 @@
+# all default models share the same model parameters relative to inference
+
+[seed]
+model = 42
+
+[model]
+dim = 128
+k = 48
+num_encoder_blocks = 3
+num_decoder_blocks = 3
+dropout_rate = 0.1
