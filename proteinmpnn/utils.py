@@ -5,8 +5,8 @@ from jaxtyping import Array, Int, PRNGKeyArray
 
 def build_decoding_order(
     backbone_chains: list[str],
-    fixed_positions: list[int],
-    fixed_chains: list[str],
+    fixed_positions: list[int] | None = None,
+    fixed_chains: list[str] | None = None,
     *,
     # used to generate the random decoding order for unfixed residues
     key: PRNGKeyArray,
@@ -21,6 +21,11 @@ def build_decoding_order(
 
     Used during the sampling process to appropriately mask the input sequence.
     """
+    if fixed_positions is None:
+        fixed_positions = []
+    if fixed_chains is None:
+        fixed_chains = []
+
     fixed_positions_set = set(fixed_positions)
     fixed_chains_set = set(fixed_chains)
     for idx, chain in enumerate(backbone_chains):
