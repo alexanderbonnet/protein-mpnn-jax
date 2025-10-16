@@ -14,14 +14,21 @@ from proteinmpnn import constants
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class BackboneResidue:
-    """Container for a single residue's structural information."""
+    """Container for a single residue's structural information.
+
+    A residue is considered missing if at least one of its backbone atoms is missing.
+    """
 
     index: int
+    restype: int
+    resname: str
     carbon_alpha_pos: Float[Array, " 3"]
     carbon_pos: Float[Array, " 3"]
     nitrogen_pos: Float[Array, " 3"]
     oxygen_pos: Float[Array, " 3"]
+    chain: str
     chain_index: int
+    missing: bool
 
 
 def read_structure(filepath: str | Path, use_assembly: bool = True) -> gemmi.Structure:
@@ -47,27 +54,48 @@ def read_structure(filepath: str | Path, use_assembly: bool = True) -> gemmi.Str
     return structure
 
 
-# NOTE: adapt parsing for training i.e handling missing residues, etc...
+def get_single_letter_code(residue: gemmi.Residue) -> str:
+    residue_info = gemmi.find_tabulated_residue(residue.name)
+    if residue_info.is_amino_acid() and residue_info.is_standard():
+        single_letter = residue_info.one_letter_code
+        single_letter = single_letter.upper()
+        # non-standard residues derived from a parent std residue are lowercase
+        single_letter = single_letter if single_letter in constants.ALPHABET else "X"
+        return single_letter
+    return "X"
+
+
+# NOTE: adapt parsing for training idx.e handling missing residues, etc...
 def parse_backbone(structure: gemmi.Structure) -> list[BackboneResidue]:
     """Parse a gemmi Structure into an AtomStructure object."""
     # only parse the first model
     model = structure[0]
 
     residues = []
-    for i, chain in enumerate(model):
+    for idx, chain in enumerate(model):
         for residue in chain.get_polymer():
             # zero-index the residue index
             residue_index = residue.label_seq - 1  # type: ignore[operator]
             atom_pos = {atom.name: atom.pos.tolist() for atom in residue}
-            residue_structure = BackboneResidue(
+
+            single_letter_code = get_single_letter_code(residue)
+            restype = constants.ALPHABET.index(single_letter_code)
+
+            # if any of the atoms are missing, consider that the entire residue is missing
+            missing = any(atom not in atom_pos for atom in ["CA", "C", "N", "O"])
+            backbone_residue = BackboneResidue(
                 index=residue_index,
-                carbon_alpha_pos=jnp.array(atom_pos["CA"], dtype=jnp.float32),
-                carbon_pos=jnp.array(atom_pos["C"], dtype=jnp.float32),
-                nitrogen_pos=jnp.array(atom_pos["N"], dtype=jnp.float32),
-                oxygen_pos=jnp.array(atom_pos["O"], dtype=jnp.float32),
-                chain_index=i,
+                restype=restype,
+                resname=single_letter_code,
+                chain=chain.name,
+                carbon_alpha_pos=jnp.array(atom_pos.get("CA", jnp.zeros(3))),
+                carbon_pos=jnp.array(atom_pos.get("C", jnp.zeros(3))),
+                nitrogen_pos=jnp.array(atom_pos.get("N", jnp.zeros(3))),
+                oxygen_pos=jnp.array(atom_pos.get("O", jnp.zeros(3))),
+                chain_index=idx,
+                missing=missing,
             )
-            residues.append(residue_structure)
+            residues.append(backbone_residue)
 
     return residues
 
@@ -81,14 +109,12 @@ class BackBoneTensors:
     residue_index: Int[Array, " n"]
     chain_labels: Int[Array, " n"]
     mask: Bool[Array, " n"]
+    restypes: Int[Array, " n"]
 
 
 def prepare_tensors(residues: list[BackboneResidue]) -> BackBoneTensors:
     """Prepare tensors from a list of BackboneResidue objects."""
-    residue_index = jnp.array([r.index for r in residues], dtype=jnp.int32)
-    chain_labels = jnp.array([r.chain_index for r in residues], dtype=jnp.int32)
-    mask = jnp.ones_like(residue_index, dtype=jnp.bool)
-    pos = jnp.zeros(shape=(residue_index.shape[0], 4, 3))
+    pos = jnp.zeros(shape=(len(residues), 4, 3))
     pos = pos.at[:, constants.ATOM_INDICES["CA"], :].set(
         [r.carbon_alpha_pos for r in residues]
     )
@@ -102,5 +128,9 @@ def prepare_tensors(residues: list[BackboneResidue]) -> BackBoneTensors:
         [r.nitrogen_pos for r in residues]
     )
     return BackBoneTensors(
-        pos=pos, chain_labels=chain_labels, residue_index=residue_index, mask=mask
+        pos=pos,
+        chain_labels=jnp.array([r.chain_index for r in residues], dtype=jnp.int32),
+        residue_index=jnp.array([r.index for r in residues], dtype=jnp.int32),
+        mask=~jnp.array([r.missing for r in residues], dtype=jnp.bool),
+        restypes=jnp.array([r.restype for r in residues], dtype=jnp.int32),
     )
