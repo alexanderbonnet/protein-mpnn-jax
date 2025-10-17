@@ -42,7 +42,7 @@ def radial_basis_function(
     x: Float[Array, "n k"], dmin: float, dmax: float, dim: int
 ) -> Float[Array, "n k dim"]:
     """Compute Gaussian radial basis functions."""
-    mu = jnp.linspace(dmin, dmax, dim, device=x.device)
+    mu = jnp.linspace(dmin, dmax, dim)
     beta = (dim / (dmax - dmin)) ** 2
     return jnp.exp(-beta * (einops.rearrange(x, "n k -> n k ()") - mu) ** 2)
 
@@ -421,9 +421,8 @@ def build_decoding_attention_mask(
     decoding_order: Int[Array, " n"], edge_index: Int[Array, "n k"]
 ) -> Float[Array, "n k"]:
     """Helper function used to build the forward and backward attention masks."""
-    n, device = decoding_order.shape[0], decoding_order.device
-    arr = jnp.zeros((n, n), device=device)
-    current = jnp.zeros((n,), device=device)
+    n = decoding_order.shape[0]
+    arr, current = jnp.zeros((n, n)), jnp.zeros((n,))
     for k in range(1, n):
         current = current + jax.nn.one_hot(decoding_order[k - 1], n)
         arr = arr.at[decoding_order[k]].set(current)
@@ -493,6 +492,7 @@ class ProteinMPNN(eqx.Module):
         # output
         self.linear_out = nn.Linear(dim, vocab, key=key6)
 
+    @eqx.filter_jit
     def encode(
         self,
         pos: Float[Array, "n 4 3"],
@@ -514,7 +514,7 @@ class ProteinMPNN(eqx.Module):
         )
 
         n, _, in_edge_dim = edges.shape
-        nodes = jnp.zeros((n, in_edge_dim), device=pos.device)
+        nodes = jnp.zeros((n, in_edge_dim))
 
         edges = jax.vmap(jax.vmap(self.edge_linear))(edges)
 
@@ -537,6 +537,7 @@ class ProteinMPNN(eqx.Module):
 
         return nodes, edges, edge_index
 
+    @eqx.filter_jit
     def decode(
         self,
         sequence: Int[Array, " n"],
@@ -587,57 +588,9 @@ class ProteinMPNN(eqx.Module):
 
         logits = jax.vmap(self.linear_out)(nodes)
 
+        # the original implementation returns log softmax outputs
         # return jax.nn.log_softmax(logits)
         return logits
-
-    def sample(
-        self,
-        sequence: Int[Array, " n"],
-        pos: Float[Array, "n 4 3"],
-        residue_index: Int[Array, " n"],
-        chain_labels: Int[Array, " n"],
-        mask_nodes: Bool[Array, " n"],
-        # decoding order is used when fixing residues and/or chains
-        decoding_order: Int[Array, " n"],
-        decoding_start_index: int = 0,
-        temperature: float = 1.0,
-        top_k: int = 1,
-        *,
-        key: PRNGKeyArray,
-    ) -> Int[Array, " n"]:
-        nodes, edges, edge_index = self.encode(
-            pos=pos,
-            residue_index=residue_index,
-            chain_labels=chain_labels,
-            mask_nodes=mask_nodes,
-            enable_dropout=False,
-            key=key,
-        )
-        n = nodes.shape[0]
-
-        keys = jr.split(key, n)
-        for i in tqdm.tqdm(range(decoding_start_index, n)):
-            key1, key2 = jr.split(keys[i])
-            logits = self.decode(
-                sequence=sequence,
-                nodes=nodes,
-                edges=edges,
-                edge_index=edge_index,
-                mask_nodes=mask_nodes,
-                decoding_order=decoding_order,
-                enable_dropout=False,
-                key=key1,
-            )
-            logits = logits / temperature
-
-            if top_k == 1:
-                sampled = jnp.argmax(logits[decoding_order[i]])
-            else:
-                probs = jax.nn.softmax(logits[decoding_order[i]] / temperature)
-                sampled = jr.choice(key=key2, a=logits.shape[-1], p=probs, shape=())
-            sequence = sequence.at[decoding_order[i]].set(sampled)
-
-        return sequence
 
     def __call__(
         self,
@@ -673,3 +626,97 @@ class ProteinMPNN(eqx.Module):
         )
 
         return nodes
+
+
+def sample(
+    model: ProteinMPNN,
+    sequence: Int[Array, " n"],
+    pos: Float[Array, "n 4 3"],
+    residue_index: Int[Array, " n"],
+    chain_labels: Int[Array, " n"],
+    mask_nodes: Bool[Array, " n"],
+    # decoding order is used when fixing residues and/or chains
+    decoding_order: Int[Array, " n"],
+    decoding_start_index: int = 0,
+    temperature: float = 1.0,
+    top_k: int = 1,
+    *,
+    key: PRNGKeyArray,
+) -> Int[Array, " n"]:
+    nodes, edges, edge_index = model.encode(
+        pos=pos,
+        residue_index=residue_index,
+        chain_labels=chain_labels,
+        mask_nodes=mask_nodes,
+        enable_dropout=False,
+        key=key,
+    )
+    n = nodes.shape[0]
+
+    keys = jr.split(key, n)
+    for idx in tqdm.tqdm(range(decoding_start_index, n)):
+        key1, key2 = jr.split(keys[idx])
+        logits = model.decode(
+            sequence=sequence,
+            nodes=nodes,
+            edges=edges,
+            edge_index=edge_index,
+            mask_nodes=mask_nodes,
+            decoding_order=decoding_order,
+            enable_dropout=False,
+            key=key1,
+        )
+        logits = logits / temperature
+
+        if top_k == 1:
+            sampled = jnp.argmax(logits[decoding_order[idx]])
+        else:
+            probs = jax.nn.softmax(logits[decoding_order[idx]] / temperature)
+            sampled = jr.choice(key=key2, a=logits.shape[-1], p=probs, shape=())
+
+        sequence = sequence.at[decoding_order[idx]].set(sampled)
+
+    return sequence
+
+
+def make_feedforward(dim: int, factor: int, *, key: PRNGKeyArray) -> nn.Sequential:
+    """Helper function to create a feedforward layer."""
+    key1, key2 = jr.split(key)
+    return nn.Sequential(
+        [
+            nn.Linear(dim, dim * factor, key=key1),
+            nn.Lambda(gelu),
+            nn.Linear(dim * factor, dim, key=key2),
+        ]
+    )
+
+
+def make_subblock(in_dim: int, dim: int, *, key: PRNGKeyArray) -> nn.Sequential:
+    """Helper function to create a 3-layer MLP used to update edge messages."""
+    key1, key2, key3 = jr.split(key, 3)
+    return nn.Sequential(
+        [
+            nn.Linear(in_dim, dim, key=key1),
+            nn.Lambda(gelu),
+            nn.Linear(dim, dim, key=key2),
+            nn.Lambda(gelu),
+            nn.Linear(dim, dim, key=key3),
+        ]
+    )
+
+
+class DropoutAndNorm(eqx.Module):
+    """A sequence of dropout and layer norm."""
+
+    dropout: nn.Dropout
+    norm: nn.LayerNorm
+
+    def __init__(self, dim: int, dropout_rate: float) -> None:
+        self.dropout = nn.Dropout(dropout_rate)
+        self.norm = nn.LayerNorm(dim)
+
+    def __call__(
+        self, x: Float[Array, " n dim"], enable_dropout: bool, key: PRNGKeyArray
+    ) -> Float[Array, " n dim"]:
+        x = self.dropout(x, key=key, inference=not enable_dropout)
+        return self.norm(x)

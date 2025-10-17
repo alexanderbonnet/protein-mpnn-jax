@@ -1,0 +1,19 @@
+seed = 42
+
+model_weights = "weights/v_48_002.eqx"
+
+[model]
+dim = 128
+k = 48
+num_encoder_blocks = 3
+num_decoder_blocks = 3
+dropout_rate = 0.0
+
+[inference]
+backbone_path = "examples/inputs/monomers/5L33.cif.gz"
+output_path = "examples/outputs/example-1.fasta"
+top_k = 1
+# temperature is ignored if top_k is 1
+temperature = 1.0
+fixed_positions = []
+fixed_chains = []

@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import torch
 
-from proteinmpnn import model as model_
+from proteinmpnn import mpnn as model_
 
 NUM_ENCODER_BLOCKS = 3
 NUM_DECODER_BLOCKS = 3
