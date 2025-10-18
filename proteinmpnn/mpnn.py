@@ -13,7 +13,7 @@ from proteinmpnn import constants
 
 
 def gelu(x: Float[Array, " ..."]) -> Float[Array, " ..."]:
-    """Matches the default PyTorch gelu implementation."""
+    """Matches the default PyTorch implementation."""
     return jax.nn.gelu(x, approximate=False)
 
 
