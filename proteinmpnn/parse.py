@@ -65,7 +65,6 @@ def get_single_letter_code(residue: gemmi.Residue) -> str:
     return "X"
 
 
-# NOTE: adapt parsing for training idx.e handling missing residues, etc...
 def parse_backbone(structure: gemmi.Structure) -> list[BackboneResidue]:
     """Parse a gemmi Structure into an AtomStructure object."""
     # only parse the first model
