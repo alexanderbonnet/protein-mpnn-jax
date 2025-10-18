@@ -432,6 +432,14 @@ def build_forward_backward_mask(
     return mask_backward, mask_forward
 
 
+def keep_top_k(x: Float[Array, " n"], k: int) -> Float[Array, " n"]:
+    """Keep only the top-k elements, set others to -inf."""
+    _, indices = jax.lax.top_k(x, k=k)
+    mask = jnp.zeros_like(x, dtype=bool)
+    mask = mask.at[indices].set(True)
+    return x * mask + (1 - mask) * -1e9
+
+
 class ProteinMPNN(eqx.Module):
     """The ProteinMPNN model."""
 
@@ -658,7 +666,8 @@ def sample(
         if top_k == 1:
             sampled = jnp.argmax(logits[decoding_order[idx]])
         else:
-            probs = jax.nn.softmax(logits[decoding_order[idx]] / temperature)
+            top_k_logits = keep_top_k(logits[decoding_order[idx]], k=top_k)
+            probs = jax.nn.softmax(top_k_logits / temperature)
             sampled = jr.choice(key=key2, a=logits.shape[-1], p=probs, shape=())
 
         sequence = sequence.at[decoding_order[idx]].set(sampled)
