@@ -30,48 +30,48 @@ conversion_map = {
 for k in range(NUM_ENCODER_BLOCKS):
     conversion_map.update(
         {
-            f"encoder_blocks.[{k}].in_block.linear_in.weight": f"encoder_layers.{k}.W1.weight",
-            f"encoder_blocks.[{k}].in_block.linear_in.bias": f"encoder_layers.{k}.W1.bias",
-            f"encoder_blocks.[{k}].in_block.hidden.weight": f"encoder_layers.{k}.W2.weight",
-            f"encoder_blocks.[{k}].in_block.hidden.bias": f"encoder_layers.{k}.W2.bias",
-            f"encoder_blocks.[{k}].in_block.linear_out.weight": f"encoder_layers.{k}.W3.weight",
-            f"encoder_blocks.[{k}].in_block.linear_out.bias": f"encoder_layers.{k}.W3.bias",
-            f"encoder_blocks.[{k}].out_block.linear_in.weight": f"encoder_layers.{k}.W11.weight",
-            f"encoder_blocks.[{k}].out_block.linear_in.bias": f"encoder_layers.{k}.W11.bias",
-            f"encoder_blocks.[{k}].out_block.hidden.weight": f"encoder_layers.{k}.W12.weight",
-            f"encoder_blocks.[{k}].out_block.hidden.bias": f"encoder_layers.{k}.W12.bias",
-            f"encoder_blocks.[{k}].out_block.linear_out.weight": f"encoder_layers.{k}.W13.weight",
-            f"encoder_blocks.[{k}].out_block.linear_out.bias": f"encoder_layers.{k}.W13.bias",
+            f"encoder_blocks.[{k}].in_block.layers.[0].weight": f"encoder_layers.{k}.W1.weight",
+            f"encoder_blocks.[{k}].in_block.layers.[0].bias": f"encoder_layers.{k}.W1.bias",
+            f"encoder_blocks.[{k}].in_block.layers.[2].weight": f"encoder_layers.{k}.W2.weight",
+            f"encoder_blocks.[{k}].in_block.layers.[2].bias": f"encoder_layers.{k}.W2.bias",
+            f"encoder_blocks.[{k}].in_block.layers.[4].weight": f"encoder_layers.{k}.W3.weight",
+            f"encoder_blocks.[{k}].in_block.layers.[4].bias": f"encoder_layers.{k}.W3.bias",
+            f"encoder_blocks.[{k}].out_block.layers.[0].weight": f"encoder_layers.{k}.W11.weight",
+            f"encoder_blocks.[{k}].out_block.layers.[0].bias": f"encoder_layers.{k}.W11.bias",
+            f"encoder_blocks.[{k}].out_block.layers.[2].weight": f"encoder_layers.{k}.W12.weight",
+            f"encoder_blocks.[{k}].out_block.layers.[2].bias": f"encoder_layers.{k}.W12.bias",
+            f"encoder_blocks.[{k}].out_block.layers.[4].weight": f"encoder_layers.{k}.W13.weight",
+            f"encoder_blocks.[{k}].out_block.layers.[4].bias": f"encoder_layers.{k}.W13.bias",
             f"encoder_blocks.[{k}].norm1.weight": f"encoder_layers.{k}.norm1.weight",
             f"encoder_blocks.[{k}].norm1.bias": f"encoder_layers.{k}.norm1.bias",
             f"encoder_blocks.[{k}].norm2.weight": f"encoder_layers.{k}.norm2.weight",
             f"encoder_blocks.[{k}].norm2.bias": f"encoder_layers.{k}.norm2.bias",
             f"encoder_blocks.[{k}].norm3.weight": f"encoder_layers.{k}.norm3.weight",
             f"encoder_blocks.[{k}].norm3.bias": f"encoder_layers.{k}.norm3.bias",
-            f"encoder_blocks.[{k}].feedforward.linear_in.weight": f"encoder_layers.{k}.dense.W_in.weight",
-            f"encoder_blocks.[{k}].feedforward.linear_in.bias": f"encoder_layers.{k}.dense.W_in.bias",
-            f"encoder_blocks.[{k}].feedforward.linear_out.weight": f"encoder_layers.{k}.dense.W_out.weight",
-            f"encoder_blocks.[{k}].feedforward.linear_out.bias": f"encoder_layers.{k}.dense.W_out.bias",
+            f"encoder_blocks.[{k}].feedforward.layers.[0].weight": f"encoder_layers.{k}.dense.W_in.weight",
+            f"encoder_blocks.[{k}].feedforward.layers.[0].bias": f"encoder_layers.{k}.dense.W_in.bias",
+            f"encoder_blocks.[{k}].feedforward.layers.[2].weight": f"encoder_layers.{k}.dense.W_out.weight",
+            f"encoder_blocks.[{k}].feedforward.layers.[2].bias": f"encoder_layers.{k}.dense.W_out.bias",
         }
     )
 
 for k in range(NUM_DECODER_BLOCKS):
     conversion_map.update(
         {
-            f"decoder_blocks.[{k}].block.linear_in.weight": f"decoder_layers.{k}.W1.weight",
-            f"decoder_blocks.[{k}].block.linear_in.bias": f"decoder_layers.{k}.W1.bias",
-            f"decoder_blocks.[{k}].block.hidden.weight": f"decoder_layers.{k}.W2.weight",
-            f"decoder_blocks.[{k}].block.hidden.bias": f"decoder_layers.{k}.W2.bias",
-            f"decoder_blocks.[{k}].block.linear_out.weight": f"decoder_layers.{k}.W3.weight",
-            f"decoder_blocks.[{k}].block.linear_out.bias": f"decoder_layers.{k}.W3.bias",
+            f"decoder_blocks.[{k}].block.layers.[0].weight": f"decoder_layers.{k}.W1.weight",
+            f"decoder_blocks.[{k}].block.layers.[0].bias": f"decoder_layers.{k}.W1.bias",
+            f"decoder_blocks.[{k}].block.layers.[2].weight": f"decoder_layers.{k}.W2.weight",
+            f"decoder_blocks.[{k}].block.layers.[2].bias": f"decoder_layers.{k}.W2.bias",
+            f"decoder_blocks.[{k}].block.layers.[4].weight": f"decoder_layers.{k}.W3.weight",
+            f"decoder_blocks.[{k}].block.layers.[4].bias": f"decoder_layers.{k}.W3.bias",
             f"decoder_blocks.[{k}].norm1.weight": f"decoder_layers.{k}.norm1.weight",
             f"decoder_blocks.[{k}].norm1.bias": f"decoder_layers.{k}.norm1.bias",
             f"decoder_blocks.[{k}].norm2.weight": f"decoder_layers.{k}.norm2.weight",
             f"decoder_blocks.[{k}].norm2.bias": f"decoder_layers.{k}.norm2.bias",
-            f"decoder_blocks.[{k}].feedforward.linear_in.weight": f"decoder_layers.{k}.dense.W_in.weight",
-            f"decoder_blocks.[{k}].feedforward.linear_in.bias": f"decoder_layers.{k}.dense.W_in.bias",
-            f"decoder_blocks.[{k}].feedforward.linear_out.weight": f"decoder_layers.{k}.dense.W_out.weight",
-            f"decoder_blocks.[{k}].feedforward.linear_out.bias": f"decoder_layers.{k}.dense.W_out.bias",
+            f"decoder_blocks.[{k}].feedforward.layers.[0].weight": f"decoder_layers.{k}.dense.W_in.weight",
+            f"decoder_blocks.[{k}].feedforward.layers.[0].bias": f"decoder_layers.{k}.dense.W_in.bias",
+            f"decoder_blocks.[{k}].feedforward.layers.[2].weight": f"decoder_layers.{k}.dense.W_out.weight",
+            f"decoder_blocks.[{k}].feedforward.layers.[2].bias": f"decoder_layers.{k}.dense.W_out.bias",
         }
     )
 
@@ -100,7 +100,7 @@ def update_eqx_with_state_dict(
     updated_module = jax.tree.unflatten(treedef, updated_leaves)
 
     if not count == len(conversion_map):
-        raise ValueError("Did not find all keys in conversion map")
+        raise ValueError("Did not find all keys in conversion map.")
     return updated_module
 
 

@@ -210,42 +210,30 @@ class FeatureEmbedding(eqx.Module):
         return edges, edge_index
 
 
-class FeedForward(eqx.Module):
-    """Simple feedforward layer used in the encoder and decoder blocks."""
-
-    linear_in: nn.Linear
-    linear_out: nn.Linear
-
-    def __init__(self, dim: int, factor: int = 4, *, key: PRNGKeyArray) -> None:
-        key1, key2 = jr.split(key, 2)
-
-        self.linear_in = nn.Linear(dim, dim * factor, key=key1)
-        self.linear_out = nn.Linear(dim * factor, dim, key=key2)
-
-    def __call__(self, x: Float[Array, " n dim"]) -> Float[Array, " n dim"]:
-        x = jax.vmap(self.linear_in)(x)
-        x = gelu(x)
-        return jax.vmap(self.linear_out)(x)
+def make_feedforward(dim: int, factor: int, *, key: PRNGKeyArray) -> nn.Sequential:
+    """Helper function to create a feedforward layer."""
+    key1, key2 = jr.split(key)
+    return nn.Sequential(
+        [
+            nn.Linear(dim, dim * factor, key=key1),
+            nn.Lambda(gelu),
+            nn.Linear(dim * factor, dim, key=key2),
+        ]
+    )
 
 
-class SubBlock(eqx.Module):
-    """A 3 layer MLP used to update edge messages."""
-
-    linear_in: nn.Linear
-    hidden: nn.Linear
-    linear_out: nn.Linear
-
-    def __init__(self, in_dim: int, dim: int, *, key: PRNGKeyArray) -> None:
-        key1, key2, key3 = jr.split(key, 3)
-
-        self.linear_in = nn.Linear(in_dim, dim, key=key1)
-        self.hidden = nn.Linear(dim, dim, key=key2)
-        self.linear_out = nn.Linear(dim, dim, key=key3)
-
-    def __call__(self, x: Float[Array, "n k in_dim"]) -> Float[Array, "n k dim"]:
-        x = gelu(jax.vmap(jax.vmap(self.linear_in))(x))
-        x = gelu(jax.vmap(jax.vmap(self.hidden))(x))
-        return jax.vmap(jax.vmap(self.linear_out))(x)
+def make_subblock(in_dim: int, dim: int, *, key: PRNGKeyArray) -> nn.Sequential:
+    """Helper function to create a 3-layer MLP used to update edge messages."""
+    key1, key2, key3 = jr.split(key, 3)
+    return nn.Sequential(
+        [
+            nn.Linear(in_dim, dim, key=key1),
+            nn.Lambda(gelu),
+            nn.Linear(dim, dim, key=key2),
+            nn.Lambda(gelu),
+            nn.Linear(dim, dim, key=key3),
+        ]
+    )
 
 
 class EncoderBlock(eqx.Module):
@@ -255,8 +243,8 @@ class EncoderBlock(eqx.Module):
 
     scale: float
 
-    in_block: SubBlock
-    out_block: SubBlock
+    in_block: nn.Sequential
+    out_block: nn.Sequential
 
     dropout1: nn.Dropout
     dropout2: nn.Dropout
@@ -266,7 +254,7 @@ class EncoderBlock(eqx.Module):
     norm2: nn.LayerNorm
     norm3: nn.LayerNorm
 
-    feedforward: FeedForward
+    feedforward: nn.Sequential
 
     def __init__(
         self,
@@ -280,8 +268,8 @@ class EncoderBlock(eqx.Module):
 
         self.scale = scale
 
-        self.in_block = SubBlock(dim * 3, dim, key=key1)
-        self.out_block = SubBlock(dim * 3, dim, key=key2)
+        self.in_block = make_subblock(in_dim=dim * 3, dim=dim, key=key1)
+        self.out_block = make_subblock(in_dim=dim * 3, dim=dim, key=key2)
 
         self.dropout1 = nn.Dropout(dropout_rate)
         self.dropout2 = nn.Dropout(dropout_rate)
@@ -291,7 +279,7 @@ class EncoderBlock(eqx.Module):
         self.norm2 = nn.LayerNorm(dim)
         self.norm3 = nn.LayerNorm(dim)
 
-        self.feedforward = FeedForward(dim=dim, factor=4, key=key3)
+        self.feedforward = make_feedforward(dim=dim, factor=4, key=key3)
 
     def __call__(
         self,
@@ -313,7 +301,7 @@ class EncoderBlock(eqx.Module):
             ],
             axis=-1,
         )
-        message = self.in_block(message)
+        message = jax.vmap(jax.vmap(self.in_block))(message)
 
         # attention mask
         message = message * einops.rearrange(mask_edges, "n k -> n k ()")
@@ -326,7 +314,7 @@ class EncoderBlock(eqx.Module):
         out_nodes = jax.vmap(self.norm1)(nodes + message)
 
         # update representation
-        message = self.feedforward(out_nodes)
+        message = jax.vmap(self.feedforward)(out_nodes)
 
         # dropout and norm
         message = self.dropout2(message, key=key2, inference=not enable_dropout)
@@ -345,7 +333,7 @@ class EncoderBlock(eqx.Module):
             axis=-1,
         )
 
-        message = self.out_block(message)
+        message = jax.vmap(jax.vmap(self.out_block))(message)
         message = self.dropout3(message, key=key3, inference=not enable_dropout)
         out_edges = jax.vmap(jax.vmap(self.norm3))(edges + message)
         return out_nodes, out_edges
@@ -358,7 +346,7 @@ class DecoderBlock(eqx.Module):
 
     scale: float
 
-    block: SubBlock
+    block: nn.Sequential
 
     dropout1: nn.Dropout
     dropout2: nn.Dropout
@@ -366,7 +354,7 @@ class DecoderBlock(eqx.Module):
     norm1: nn.LayerNorm
     norm2: nn.LayerNorm
 
-    feedforward: FeedForward
+    feedforward: nn.Sequential
 
     def __init__(
         self,
@@ -380,7 +368,7 @@ class DecoderBlock(eqx.Module):
 
         self.scale = scale
 
-        self.block = SubBlock(dim * 4, dim, key=key1)
+        self.block = make_subblock(in_dim=dim * 4, dim=dim, key=key1)
 
         self.dropout1 = nn.Dropout(dropout_rate)
         self.dropout2 = nn.Dropout(dropout_rate)
@@ -388,7 +376,7 @@ class DecoderBlock(eqx.Module):
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
 
-        self.feedforward = FeedForward(dim=dim, factor=4, key=key2)
+        self.feedforward = make_feedforward(dim=dim, factor=4, key=key2)
 
     def __call__(
         self,
@@ -404,13 +392,13 @@ class DecoderBlock(eqx.Module):
             [einops.repeat(nodes, "n d -> n k d", k=edges.shape[1]), edges],
             axis=-1,
         )
-        message = self.block(message)
+        message = jax.vmap(jax.vmap(self.block))(message)
 
         message = einops.reduce(message, "n k d -> n d", "sum") / self.scale
         message = self.dropout1(message, key=key1, inference=not enable_dropout)
         out_nodes = jax.vmap(self.norm1)(nodes + message)
 
-        message = self.feedforward(out_nodes)
+        message = jax.vmap(self.feedforward)(out_nodes)
         message = self.dropout2(message, key=key2, inference=not enable_dropout)
         out_nodes = jax.vmap(self.norm2)(out_nodes + message)
 
@@ -624,7 +612,6 @@ class ProteinMPNN(eqx.Module):
             enable_dropout=enable_dropout,
             key=key2,
         )
-
         return nodes
 
 
@@ -677,46 +664,3 @@ def sample(
         sequence = sequence.at[decoding_order[idx]].set(sampled)
 
     return sequence
-
-
-def make_feedforward(dim: int, factor: int, *, key: PRNGKeyArray) -> nn.Sequential:
-    """Helper function to create a feedforward layer."""
-    key1, key2 = jr.split(key)
-    return nn.Sequential(
-        [
-            nn.Linear(dim, dim * factor, key=key1),
-            nn.Lambda(gelu),
-            nn.Linear(dim * factor, dim, key=key2),
-        ]
-    )
-
-
-def make_subblock(in_dim: int, dim: int, *, key: PRNGKeyArray) -> nn.Sequential:
-    """Helper function to create a 3-layer MLP used to update edge messages."""
-    key1, key2, key3 = jr.split(key, 3)
-    return nn.Sequential(
-        [
-            nn.Linear(in_dim, dim, key=key1),
-            nn.Lambda(gelu),
-            nn.Linear(dim, dim, key=key2),
-            nn.Lambda(gelu),
-            nn.Linear(dim, dim, key=key3),
-        ]
-    )
-
-
-class DropoutAndNorm(eqx.Module):
-    """A sequence of dropout and layer norm."""
-
-    dropout: nn.Dropout
-    norm: nn.LayerNorm
-
-    def __init__(self, dim: int, dropout_rate: float) -> None:
-        self.dropout = nn.Dropout(dropout_rate)
-        self.norm = nn.LayerNorm(dim)
-
-    def __call__(
-        self, x: Float[Array, " n dim"], enable_dropout: bool, key: PRNGKeyArray
-    ) -> Float[Array, " n dim"]:
-        x = self.dropout(x, key=key, inference=not enable_dropout)
-        return self.norm(x)
