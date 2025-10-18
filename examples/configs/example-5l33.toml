@@ -11,7 +11,7 @@ dropout_rate = 0.0
 
 [inference]
 backbone_path = "examples/inputs/monomers/5L33.cif.gz"
-output_path = "examples/outputs/example-1.fasta"
+output_path = "examples/outputs/example-5l33.fasta"
 top_k = 1
 # temperature is ignored if top_k is 1
 temperature = 1.0
