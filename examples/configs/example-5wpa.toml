@@ -1,4 +1,4 @@
-# configuration file for a monomeric protein (5L33)
+# configuration file for a heterodimer while fixing the "A" chain (5wpa)
 
 seed = 42
 model_weights = "weights/v_48_002.eqx"
@@ -11,9 +11,9 @@ num_decoder_blocks = 3
 dropout_rate = 0.0
 
 [inference]
-backbone_path = "examples/inputs/monomers/5L33.cif.gz"
-output_path = "examples/outputs/example-5l33.fasta"
+backbone_path = "examples/inputs/multimers/5WPA.cif.gz"
+output_path = "examples/outputs/example-5WPA.fasta"
 top_k = 1
 temperature = 1.0
 fixed_positions = []
-fixed_chains = []
+fixed_chains = ["A"]
