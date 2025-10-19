@@ -1,12 +1,6 @@
 """Useful constants."""
 
-ATOM_INDICES = {
-    "N": 0,
-    "CA": 1,
-    "C": 2,
-    "O": 3,
-    "CB": 4,
-}
+ATOM_INDICES = {"N": 0, "CA": 1, "C": 2, "O": 3, "CB": 4}
 
 ATOM_PAIR_RBFS = [
     # ("CA", "CA"),
