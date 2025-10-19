@@ -32,7 +32,7 @@ def run(
         key=key1,
     )
 
-    model = mpnn.ProteinMPNN(**constants.DEFAULT_HYPERPARAMS, key=key2)
+    model = mpnn.ProteinMPNN(**constants.DEFAULT_HYPERPARAMS, key=key2)  # type: ignore[arg-type]
     model = eqx.tree_deserialise_leaves(path_or_file=weights_path, like=model)
     nn.inference_mode(pytree=model, value=True)
     loguru.logger.info("Loaded model weights.")
@@ -67,9 +67,8 @@ def run(
         fasta_text.extend([header, sequence])
         k += chain_lengths[chain]
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text("\n".join(fasta_text))
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_path).write_text("\n".join(fasta_text))
 
     loguru.logger.info(f"Wrote output to {output_path}.")
 

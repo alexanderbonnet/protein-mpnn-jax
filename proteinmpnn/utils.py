@@ -33,8 +33,8 @@ def build_decoding_order(
             fixed_positions_set.add(idx)
 
     # order does not matter for the fixed positions
-    fixed_positions = jnp.array(list(fixed_positions_set))
-    decoding_start_index = fixed_positions.shape[0]
+    fixed_positions_all = jnp.array(list(fixed_positions_set))
+    decoding_start_index = fixed_positions_all.shape[0]
 
     free_positions = jnp.array(
         [idx for idx in range(len(backbone_chains)) if idx not in fixed_positions_set]
@@ -44,6 +44,6 @@ def build_decoding_order(
     free_positions = jr.permutation(key=key, x=free_positions)
 
     decoding_order = jnp.concatenate(
-        [fixed_positions, free_positions], axis=0, dtype=jnp.int32
+        [fixed_positions_all, free_positions], axis=0, dtype=jnp.int32
     )
     return decoding_order, decoding_start_index
