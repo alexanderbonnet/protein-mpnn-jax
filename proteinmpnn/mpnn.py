@@ -459,8 +459,8 @@ class ProteinMPNN(eqx.Module):
         k: int,
         num_encoder_blocks: int,
         num_decoder_blocks: int,
-        vocab: int = 21,
-        dropout_rate: float = 0.1,
+        vocab: int,
+        dropout_rate: float,
         *,
         key: Array,
     ) -> None:
