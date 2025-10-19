@@ -1,12 +1,8 @@
 # protein-mpnn-jax
 
-A JAX implementation of Protein MPNN.
+A JAX implementation of Protein MPNN, a message passing graph neural network for inverse folding.
 
-All credit goes to the [paper](https://www.science.org/doi/10.1126/science.add2187) authors. This repository is based off of the paper's [repository](https://github.com/dauparas/ProteinMPNN).
-
-:warning: The repository may be subject to significant change in the future.
-
-Logit outputs for the model match the original repository.
+All credit goes to the [paper](https://www.science.org/doi/10.1126/science.add2187) authors. This repository is based off of the paper's [repository](https://github.com/dauparas/ProteinMPNN). Logit outputs for the model match the original repository.
 
 ## Getting started
 
@@ -14,14 +10,28 @@ Logit outputs for the model match the original repository.
 
 Dependencies are managed using [uv](https://docs.astral.sh/uv/).
 
-### Examples
+### Weights
 
 Weights are available on [google drive](https://drive.google.com/drive/folders/1Nv2NJvWq3rCzHtWN8Qap-aAYrS9DR2AP?usp=sharing). They can be downloaded using the `scripts/download_weights.py` script. They were converted from PyTorch to JAX using the `scripts/convert_weights` script.
 
-Sample sequences with
+### Example
 
-```bash
-uv run python -m proteinmpnn.run --weights_path <path to model weights> --backbone_path <path to *.pdb, *.cif, *.cif.gz> --output_path <path to output fasta> --top_k <k for top-k sampling> --temperature <temperature for top k sampling> --fixed_chains <list of chains, eg. "A, B" > --fixed_positions <list of positions eg. "1, 2, 3">
+Example backbones are stored in `examples/`.
+
+```python
+import proteinmpnn
+
+sampled = proteinmpnn.sample(
+    weights_path="weights/v_48_002.eqx",
+    backbone_path="examples/inputs/multimers/5WPA.cif.gz",
+    top_k=1,
+    temperature=0.1,
+    fixed_positions=[],
+    fixed_chains=["A"],
+    seed=0,
+)
+
+# sampled[0] = SampledSequence(sequence='MVKSYLEPGEKEYTNRCELFVGNLPKDMTMEKFKELFKKYGEPKNVFLNKEKGYGYISLRSRNRANIAKSELNGKEVGNKPLVIRFKKLEAALTVGNLDPEVTDELLREAFGQFGPVERAVVLVDKEGRATGRGEVLFETKEPAEKALKECSEKSFLLTSNPRPVIVEPKEELDDEIGRPEEEMEETEEYKKERAKGPRFAKPGTKEYKLASAWRKLEKEEKQQREQVEEMYKEQRESLEKYFEEEREKREAEKE', chain='B')
 ```
 
 ```bash
