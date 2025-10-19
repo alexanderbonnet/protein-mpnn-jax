@@ -55,6 +55,7 @@ def read_structure(filepath: str | Path, use_assembly: bool = True) -> gemmi.Str
 
 
 def get_single_letter_code(residue: gemmi.Residue) -> str:
+    """Get a single-letter amino acid code for a gemmi Residue."""
     residue_info = gemmi.find_tabulated_residue(residue.name)
     if residue_info.is_amino_acid() and residue_info.is_standard():
         single_letter = residue_info.one_letter_code
