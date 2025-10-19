@@ -4,9 +4,9 @@ A JAX implementation of Protein MPNN.
 
 All credit goes to the [paper](https://www.science.org/doi/10.1126/science.add2187) authors. This repository is based off of the paper's [repository](https://github.com/dauparas/ProteinMPNN).
 
-:warning: The repository is subject to change significantly in the near future.
+:warning: The repository may be subject to significant change in the future.
 
-Logit outputs for the model match the original reposiotry.
+Logit outputs for the model match the original repository.
 
 ## Getting started
 
@@ -21,12 +21,10 @@ Weights are available on [google drive](https://drive.google.com/drive/folders/1
 Sample sequences with
 
 ```bash
-uv run python -m proteinmpnn.run --config_path <path to config> --eqx_path <path to model weights>.
+uv run python -m proteinmpnn.run --weights_path <path to model weights> --backbone_path <path to *.pdb, *.cif, *.cif.gz> --output_path <path to output fasta> --top_k <k for top-k sampling> --temperature <temperature for top k sampling> --fixed_chains <list of chains, eg. "A, B" > --fixed_positions <list of positions eg. "1, 2, 3">
 ```
 
 Examples for configuration files are found in `examples/configs`.
-
-
 
 ```bash
 @article{dauparas2022robust,
