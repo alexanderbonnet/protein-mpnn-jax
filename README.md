@@ -24,8 +24,6 @@ Sample sequences with
 uv run python -m proteinmpnn.run --weights_path <path to model weights> --backbone_path <path to *.pdb, *.cif, *.cif.gz> --output_path <path to output fasta> --top_k <k for top-k sampling> --temperature <temperature for top k sampling> --fixed_chains <list of chains, eg. "A, B" > --fixed_positions <list of positions eg. "1, 2, 3">
 ```
 
-Examples for configuration files are found in `examples/configs`.
-
 ```bash
 @article{dauparas2022robust,
   title={Robust deep learning--based protein sequence design using ProteinMPNN},
