@@ -9,13 +9,6 @@ import loguru
 from proteinmpnn import constants, mpnn, parse, utils
 
 
-def write_fasta(sequence: str, path: str | Path, header: str) -> None:
-    """Write a sequence to a FASTA file."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join([header, sequence]))
-
-
 def run(
     weights_path: str,
     backbone_path: str,
