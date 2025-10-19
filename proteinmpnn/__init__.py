@@ -24,6 +24,7 @@ def sample(
     fixed_positions: list[int] | None = None,
     fixed_chains: list[str] | None = None,
     seed: int = 42,
+    progress_bar: bool = False,
 ) -> list[SampledSequence]:
     backbone = parse.read_structure(str(backbone_path), use_assembly=True)
     residues = parse.parse_backbone(backbone)
@@ -57,6 +58,7 @@ def sample(
         key=key3,
         top_k=top_k,
         temperature=temperature,
+        progress_bar=progress_bar,
     )
     loguru.logger.info("Sampling sequence completed.")
 

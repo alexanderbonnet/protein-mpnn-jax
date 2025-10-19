@@ -637,6 +637,7 @@ def sample(
     top_k: int = 1,
     *,
     key: PRNGKeyArray,
+    progress_bar: bool = False,
 ) -> Int[Array, " n"]:
     nodes, edges, edge_index = model.encode(
         pos=pos,
@@ -649,7 +650,7 @@ def sample(
     n = nodes.shape[0]
 
     keys = jr.split(key, n)
-    for idx in tqdm.tqdm(range(decoding_start_index, n)):
+    for idx in tqdm.tqdm(range(decoding_start_index, n), disable=not progress_bar):
         key1, key2 = jr.split(keys[idx])
         logits = model.decode(
             sequence=sequence,
