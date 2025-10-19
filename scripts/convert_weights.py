@@ -9,10 +9,8 @@ import jax.numpy as jnp
 import jax.random as jr
 import torch
 
+from proteinmpnn import constants
 from proteinmpnn import mpnn as model_
-
-NUM_ENCODER_BLOCKS = 3
-NUM_DECODER_BLOCKS = 3
 
 conversion_map = {
     "features.positional_encoding.linear.weight": "features.embeddings.linear.weight",
@@ -27,7 +25,7 @@ conversion_map = {
     "sequence_embedding.weight": "W_s.weight",
 }
 
-for k in range(NUM_ENCODER_BLOCKS):
+for k in range(constants.DEFAULT_HYPERPARAMS["num_encoder_blocks"]):
     conversion_map.update(
         {
             f"encoder_blocks.[{k}].in_block.layers.[0].weight": f"encoder_layers.{k}.W1.weight",
@@ -55,7 +53,7 @@ for k in range(NUM_ENCODER_BLOCKS):
         }
     )
 
-for k in range(NUM_DECODER_BLOCKS):
+for k in range(constants.DEFAULT_HYPERPARAMS["num_decoder_blocks"]):
     conversion_map.update(
         {
             f"decoder_blocks.[{k}].block.layers.[0].weight": f"decoder_layers.{k}.W1.weight",
