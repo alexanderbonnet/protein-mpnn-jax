@@ -32,7 +32,3 @@ extend-select = [
 extend-ignore = [
     "F722", # https://docs.kidger.site/jaxtyping/faq/
 ]
-
-[[tool.mypy.overrides]]
-module = ["fire.*"]
-ignore_missing_imports = true
