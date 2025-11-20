@@ -33,12 +33,10 @@ ATOM_PAIR_RBFS = [
 VOCABULARY = "ACDEFGHIKLMNPQRSTVWYX"
 
 # default model hyperparameters
-DEFAULT_HYPERPARAMS = {
+DEFAULT_HYPERPARAMS: dict[str, int] = {
     "dim": 128,
     "k": 48,
     "num_encoder_blocks": 3,
     "num_decoder_blocks": 3,
-    # trained with 0.1 dropout, will be set to zero for inference
-    "dropout_rate": 0.1,
     "vocab": len(VOCABULARY),
 }
