@@ -68,9 +68,7 @@ def sample(
     results = []
     k = 0
     for chain in chains:
-        sequence = "".join(
-            [constants.ALPHABET[s] for s in sampled[k : k + chain_lengths[chain]]]
-        )
+        sequence = "".join([constants.VOCABULARY[s] for s in sampled[k : k + chain_lengths[chain]]])
         results.append(SampledSequence(sequence=sequence, chain=chain))
         k += chain_lengths[chain]
 

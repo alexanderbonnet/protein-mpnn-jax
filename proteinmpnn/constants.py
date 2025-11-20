@@ -30,7 +30,7 @@ ATOM_PAIR_RBFS = [
     ("C", "O"),
 ]
 
-ALPHABET = "ACDEFGHIKLMNPQRSTVWYX"
+VOCABULARY = "ACDEFGHIKLMNPQRSTVWYX"
 
 # default model hyperparameters
 DEFAULT_HYPERPARAMS = {
@@ -40,5 +40,5 @@ DEFAULT_HYPERPARAMS = {
     "num_decoder_blocks": 3,
     # trained with 0.1 dropout, will be set to zero for inference
     "dropout_rate": 0.1,
-    "vocab": len(ALPHABET),
+    "vocab": len(VOCABULARY),
 }
