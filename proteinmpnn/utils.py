@@ -43,7 +43,5 @@ def build_decoding_order(
     # randomize the decoding order for the free positions
     free_positions = jr.permutation(key=key, x=free_positions)
 
-    decoding_order = jnp.concatenate(
-        [fixed_positions_all, free_positions], axis=0, dtype=jnp.int32
-    )
+    decoding_order = jnp.concatenate([fixed_positions_all, free_positions], axis=0, dtype=jnp.int32)
     return decoding_order, decoding_start_index

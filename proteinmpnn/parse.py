@@ -61,7 +61,7 @@ def get_single_letter_code(residue: gemmi.Residue) -> str:
         single_letter = residue_info.one_letter_code
         single_letter = single_letter.upper()
         # non-standard residues derived from a parent std residue are lowercase
-        single_letter = single_letter if single_letter in constants.ALPHABET else "X"
+        single_letter = single_letter if single_letter in constants.VOCABULARY else "X"
         return single_letter
     return "X"
 
@@ -79,7 +79,7 @@ def parse_backbone(structure: gemmi.Structure) -> list[BackboneResidue]:
             atom_pos = {atom.name: atom.pos.tolist() for atom in residue}
 
             single_letter_code = get_single_letter_code(residue)
-            restype = constants.ALPHABET.index(single_letter_code)
+            restype = constants.VOCABULARY.index(single_letter_code)
 
             # if any of the atoms are missing, consider that the entire residue is missing
             missing = any(atom not in atom_pos for atom in ["CA", "C", "N", "O"])
@@ -115,18 +115,10 @@ class BackBoneTensors:
 def prepare_tensors(residues: list[BackboneResidue]) -> BackBoneTensors:
     """Prepare tensors from a list of BackboneResidue objects."""
     pos = jnp.zeros(shape=(len(residues), 4, 3))
-    pos = pos.at[:, constants.ATOM_INDICES["CA"], :].set(
-        [r.carbon_alpha_pos for r in residues]
-    )
-    pos = pos.at[:, constants.ATOM_INDICES["C"], :].set(
-        [r.carbon_pos for r in residues]
-    )
-    pos = pos.at[:, constants.ATOM_INDICES["O"], :].set(
-        [r.oxygen_pos for r in residues]
-    )
-    pos = pos.at[:, constants.ATOM_INDICES["N"], :].set(
-        [r.nitrogen_pos for r in residues]
-    )
+    pos = pos.at[:, constants.ATOM_INDICES["CA"], :].set([r.carbon_alpha_pos for r in residues])
+    pos = pos.at[:, constants.ATOM_INDICES["C"], :].set([r.carbon_pos for r in residues])
+    pos = pos.at[:, constants.ATOM_INDICES["O"], :].set([r.oxygen_pos for r in residues])
+    pos = pos.at[:, constants.ATOM_INDICES["N"], :].set([r.nitrogen_pos for r in residues])
     return BackBoneTensors(
         pos=pos,
         chain_labels=jnp.array([r.chain_index for r in residues], dtype=jnp.int32),

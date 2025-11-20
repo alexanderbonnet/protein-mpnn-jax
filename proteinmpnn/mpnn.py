@@ -1,15 +1,21 @@
 """Protein MPNN model implementation with JAX/Equinox."""
 
+from pathlib import Path
+from typing import Literal
+
 import einops
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import loguru
+import torch
 import tqdm
 from equinox import nn
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from proteinmpnn import constants
+from proteinmpnn import mpnn as model_
 
 
 def gelu(x: Float[Array, " ..."]) -> Float[Array, " ..."]:
@@ -84,9 +90,7 @@ class PositionalEncodings(eqx.Module):
     max_relative_offset: int
     linear: nn.Linear
 
-    def __init__(
-        self, dim: int, max_relative_offset: int = 32, *, key: PRNGKeyArray
-    ) -> None:
+    def __init__(self, dim: int, max_relative_offset: int = 32, *, key: PRNGKeyArray) -> None:
         self.max_relative_offset = max_relative_offset
         self.linear = nn.Linear(2 * max_relative_offset + 1 + 1, dim, key=key)
 
@@ -132,9 +136,7 @@ def backbone_features(
     cb = virtual_cb_pos(backbone_pos)
     pos: Float[Array, "n 5 3"] = jnp.concat([backbone_pos, cb[:, None, :]], axis=1)
 
-    radial_bases = [
-        radial_basis_function(ca_distances, dmin=dmin, dmax=dmax, dim=rbf_dim)
-    ]
+    radial_bases = [radial_basis_function(ca_distances, dmin=dmin, dmax=dmax, dim=rbf_dim)]
     for atom1, atom2 in constants.ATOM_PAIR_RBFS:
         idx1 = constants.ATOM_INDICES[atom1]
         idx2 = constants.ATOM_INDICES[atom2]
@@ -175,9 +177,7 @@ class FeatureEmbedding(eqx.Module):
         self.rbf_dmax = rbf_dmax
         self.k = k
 
-        self.edge_embedding = nn.Linear(
-            num_pos_emb + rbf_dim * 25, dim, use_bias=False, key=key1
-        )
+        self.edge_embedding = nn.Linear(num_pos_emb + rbf_dim * 25, dim, use_bias=False, key=key1)
         self.edge_norm = nn.LayerNorm(dim)
         self.positional_encoding = PositionalEncodings(num_pos_emb, key=key2)
 
@@ -460,7 +460,7 @@ class ProteinMPNN(eqx.Module):
         num_encoder_blocks: int,
         num_decoder_blocks: int,
         vocab: int,
-        dropout_rate: float,
+        dropout_rate: float = 0.0,
         *,
         key: Array,
     ) -> None:
@@ -546,14 +546,10 @@ class ProteinMPNN(eqx.Module):
         key: PRNGKeyArray,
     ) -> Float[Array, "n dim"]:
         sequence_emb = jax.vmap(self.sequence_embedding)(sequence)
-        sequence_emb = jnp.concat(
-            [edges, gather_nodes(sequence_emb, edge_index)], axis=-1
-        )
+        sequence_emb = jnp.concat([edges, gather_nodes(sequence_emb, edge_index)], axis=-1)
 
         mask_backward, mask_forward = build_forward_backward_mask(
-            decoding_order=decoding_order,
-            edge_index=edge_index,
-            mask=mask_nodes,
+            decoding_order=decoding_order, edge_index=edge_index, mask=mask_nodes
         )
         mask_backward = einops.rearrange(mask_backward, "n k -> n k ()")
         mask_forward = einops.rearrange(mask_forward, "n k -> n k ()")
@@ -622,55 +618,185 @@ class ProteinMPNN(eqx.Module):
         )
         return nodes
 
+    @classmethod
+    def from_pretrained(cls, name: str, *, key: PRNGKeyArray) -> "ProteinMPNN":
+        """Load a pretrained ProteinMPNN model."""
+        weights_path = get_weights_path(name)
+        if not weights_path.is_file():
+            loguru.logger.info(
+                f"Weights file not found: {weights_path}, converting weights from torch."
+            )
+            convert_torch_to_equinox(name)
+        model = ProteinMPNN(**constants.DEFAULT_HYPERPARAMS, key=key)
+        model = eqx.tree_deserialise_leaves(path_or_file=weights_path, like=model)
+        return model
 
-def sample(
-    model: ProteinMPNN,
-    sequence: Int[Array, " n"],
-    pos: Float[Array, "n 4 3"],
-    residue_index: Int[Array, " n"],
-    chain_labels: Int[Array, " n"],
-    mask_nodes: Bool[Array, " n"],
-    # decoding order is used when fixing residues and/or chains
-    decoding_order: Int[Array, " n"],
-    decoding_start_index: int = 0,
-    temperature: float = 1.0,
-    top_k: int = 1,
-    *,
-    key: PRNGKeyArray,
-    progress_bar: bool = False,
-) -> Int[Array, " n"]:
-    nodes, edges, edge_index = model.encode(
-        pos=pos,
-        residue_index=residue_index,
-        chain_labels=chain_labels,
-        mask_nodes=mask_nodes,
-        enable_dropout=False,
-        key=key,
-    )
-    n = nodes.shape[0]
-
-    keys = jr.split(key, n)
-    for idx in tqdm.tqdm(range(decoding_start_index, n), disable=not progress_bar):
-        key1, key2 = jr.split(keys[idx])
-        logits = model.decode(
-            sequence=sequence,
-            nodes=nodes,
-            edges=edges,
-            edge_index=edge_index,
+    def sample(
+        self,
+        sequence: Int[Array, " n"],
+        pos: Float[Array, "n 4 3"],
+        residue_index: Int[Array, " n"],
+        chain_labels: Int[Array, " n"],
+        mask_nodes: Bool[Array, " n"],
+        # decoding order is used when fixing residues and/or chains
+        decoding_order: Int[Array, " n"],
+        decoding_start_index: int = 0,
+        temperature: float = 1.0,
+        top_k: int = 1,
+        *,
+        key: PRNGKeyArray,
+        progress_bar: bool = False,
+    ) -> Int[Array, " n"]:
+        nodes, edges, edge_index = self.encode(
+            pos=pos,
+            residue_index=residue_index,
+            chain_labels=chain_labels,
             mask_nodes=mask_nodes,
-            decoding_order=decoding_order,
             enable_dropout=False,
-            key=key1,
+            key=key,
         )
-        logits = logits / temperature
+        n = nodes.shape[0]
 
-        if top_k == 1:
-            sampled = jnp.argmax(logits[decoding_order[idx]])
+        keys = jr.split(key, n)
+        for idx in tqdm.tqdm(range(decoding_start_index, n), disable=not progress_bar):
+            key1, key2 = jr.split(keys[idx])
+            logits = self.decode(
+                sequence=sequence,
+                nodes=nodes,
+                edges=edges,
+                edge_index=edge_index,
+                mask_nodes=mask_nodes,
+                decoding_order=decoding_order,
+                enable_dropout=False,
+                key=key1,
+            )
+            logits = logits / temperature
+
+            if top_k == 1:
+                sampled = jnp.argmax(logits[decoding_order[idx]])
+            else:
+                top_k_logits = keep_top_k(logits[decoding_order[idx]], k=top_k)
+                probs = jax.nn.softmax(top_k_logits / temperature)
+                sampled = jr.choice(key=key2, a=logits.shape[-1], p=probs, shape=())
+
+            sequence = sequence.at[decoding_order[idx]].set(sampled)
+
+        return sequence
+
+
+def update_eqx_with_state_dict(
+    module: eqx.Module, state_dict: dict[str, torch.Tensor], conversion_map: dict[str, str]
+) -> eqx.Module:
+    path_vals, treedef = jax.tree.flatten_with_path(module)
+    updated_path_vals = []
+    count = 0
+    for names, array in path_vals:
+        key = ".".join(str(x).strip(".") for x in names)
+        if key in conversion_map:
+            weights = state_dict[conversion_map[key]]
+            assert array.shape == weights.shape, f"{array.shape} != {weights.shape} for {key=}"
+            updated_path_vals.append((names, jnp.asarray(weights)))
+            count += 1
         else:
-            top_k_logits = keep_top_k(logits[decoding_order[idx]], k=top_k)
-            probs = jax.nn.softmax(top_k_logits / temperature)
-            sampled = jr.choice(key=key2, a=logits.shape[-1], p=probs, shape=())
+            updated_path_vals.append((names, array))
 
-        sequence = sequence.at[decoding_order[idx]].set(sampled)
+    updated_leaves = [v for _, v in updated_path_vals]
+    updated_module = jax.tree.unflatten(treedef, updated_leaves)
 
-    return sequence
+    if not count == len(conversion_map):
+        raise ValueError("Did not find all keys in conversion map.")
+    return updated_module
+
+
+def get_weights_path(name: str, framework: Literal["torch", "jax"] = "jax") -> Path:
+    """Build local path to stored model weights."""
+    weights_dir = Path(__file__).parent.parent / "data" / "weights"
+    extensions = {"torch": "pt", "jax": "eqx"}
+    return weights_dir / framework / f"{name}.{extensions[framework]}"
+
+
+def convert_torch_to_equinox(name: str) -> None:
+    """Convert torch model weights to equinox and save to file."""
+    torch_weights_path = get_weights_path(name, framework="torch")
+    state_dict = torch.load(torch_weights_path, map_location="cpu")["model_state_dict"]
+
+    model = model_.ProteinMPNN(**constants.DEFAULT_HYPERPARAMS, key=jr.PRNGKey(0))
+    updated_model = update_eqx_with_state_dict(model, state_dict, load_conversion_map())
+
+    weights_path = get_weights_path(name, framework="jax")
+    if not weights_path.parent.is_dir():
+        weights_path.parent.mkdir(parents=True, exist_ok=True)
+
+    eqx.tree_serialise_leaves(weights_path, updated_model)
+
+    if not weights_path.is_file():
+        raise Exception(f"Failed to save converted weights to {weights_path}.")
+
+    loguru.logger.info(f"Converted weights saved to {weights_path}.")
+
+
+def load_conversion_map() -> dict[str, str]:
+    """Load the conversion map from a TOML file."""
+
+    conversion_map = {
+        "features.positional_encoding.linear.weight": "features.embeddings.linear.weight",
+        "features.positional_encoding.linear.bias": "features.embeddings.linear.bias",
+        "features.edge_embedding.weight": "features.edge_embedding.weight",
+        "features.edge_norm.weight": "features.norm_edges.weight",
+        "features.edge_norm.bias": "features.norm_edges.bias",
+        "edge_linear.weight": "W_e.weight",
+        "edge_linear.bias": "W_e.bias",
+        "linear_out.weight": "W_out.weight",
+        "linear_out.bias": "W_out.bias",
+        "sequence_embedding.weight": "W_s.weight",
+    }
+
+    for k in range(constants.DEFAULT_HYPERPARAMS["num_encoder_blocks"]):
+        conversion_map.update(
+            {
+                f"encoder_blocks.[{k}].in_block.layers.[0].weight": f"encoder_layers.{k}.W1.weight",
+                f"encoder_blocks.[{k}].in_block.layers.[0].bias": f"encoder_layers.{k}.W1.bias",
+                f"encoder_blocks.[{k}].in_block.layers.[2].weight": f"encoder_layers.{k}.W2.weight",
+                f"encoder_blocks.[{k}].in_block.layers.[2].bias": f"encoder_layers.{k}.W2.bias",
+                f"encoder_blocks.[{k}].in_block.layers.[4].weight": f"encoder_layers.{k}.W3.weight",
+                f"encoder_blocks.[{k}].in_block.layers.[4].bias": f"encoder_layers.{k}.W3.bias",
+                f"encoder_blocks.[{k}].out_block.layers.[0].weight": f"encoder_layers.{k}.W11.weight",
+                f"encoder_blocks.[{k}].out_block.layers.[0].bias": f"encoder_layers.{k}.W11.bias",
+                f"encoder_blocks.[{k}].out_block.layers.[2].weight": f"encoder_layers.{k}.W12.weight",
+                f"encoder_blocks.[{k}].out_block.layers.[2].bias": f"encoder_layers.{k}.W12.bias",
+                f"encoder_blocks.[{k}].out_block.layers.[4].weight": f"encoder_layers.{k}.W13.weight",
+                f"encoder_blocks.[{k}].out_block.layers.[4].bias": f"encoder_layers.{k}.W13.bias",
+                f"encoder_blocks.[{k}].norm1.weight": f"encoder_layers.{k}.norm1.weight",
+                f"encoder_blocks.[{k}].norm1.bias": f"encoder_layers.{k}.norm1.bias",
+                f"encoder_blocks.[{k}].norm2.weight": f"encoder_layers.{k}.norm2.weight",
+                f"encoder_blocks.[{k}].norm2.bias": f"encoder_layers.{k}.norm2.bias",
+                f"encoder_blocks.[{k}].norm3.weight": f"encoder_layers.{k}.norm3.weight",
+                f"encoder_blocks.[{k}].norm3.bias": f"encoder_layers.{k}.norm3.bias",
+                f"encoder_blocks.[{k}].feedforward.layers.[0].weight": f"encoder_layers.{k}.dense.W_in.weight",
+                f"encoder_blocks.[{k}].feedforward.layers.[0].bias": f"encoder_layers.{k}.dense.W_in.bias",
+                f"encoder_blocks.[{k}].feedforward.layers.[2].weight": f"encoder_layers.{k}.dense.W_out.weight",
+                f"encoder_blocks.[{k}].feedforward.layers.[2].bias": f"encoder_layers.{k}.dense.W_out.bias",
+            }
+        )
+
+    for k in range(constants.DEFAULT_HYPERPARAMS["num_decoder_blocks"]):
+        conversion_map.update(
+            {
+                f"decoder_blocks.[{k}].block.layers.[0].weight": f"decoder_layers.{k}.W1.weight",
+                f"decoder_blocks.[{k}].block.layers.[0].bias": f"decoder_layers.{k}.W1.bias",
+                f"decoder_blocks.[{k}].block.layers.[2].weight": f"decoder_layers.{k}.W2.weight",
+                f"decoder_blocks.[{k}].block.layers.[2].bias": f"decoder_layers.{k}.W2.bias",
+                f"decoder_blocks.[{k}].block.layers.[4].weight": f"decoder_layers.{k}.W3.weight",
+                f"decoder_blocks.[{k}].block.layers.[4].bias": f"decoder_layers.{k}.W3.bias",
+                f"decoder_blocks.[{k}].norm1.weight": f"decoder_layers.{k}.norm1.weight",
+                f"decoder_blocks.[{k}].norm1.bias": f"decoder_layers.{k}.norm1.bias",
+                f"decoder_blocks.[{k}].norm2.weight": f"decoder_layers.{k}.norm2.weight",
+                f"decoder_blocks.[{k}].norm2.bias": f"decoder_layers.{k}.norm2.bias",
+                f"decoder_blocks.[{k}].feedforward.layers.[0].weight": f"decoder_layers.{k}.dense.W_in.weight",
+                f"decoder_blocks.[{k}].feedforward.layers.[0].bias": f"decoder_layers.{k}.dense.W_in.bias",
+                f"decoder_blocks.[{k}].feedforward.layers.[2].weight": f"decoder_layers.{k}.dense.W_out.weight",
+                f"decoder_blocks.[{k}].feedforward.layers.[2].bias": f"decoder_layers.{k}.dense.W_out.bias",
+            }
+        )
+
+    return conversion_map

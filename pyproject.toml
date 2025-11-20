@@ -7,11 +7,11 @@ requires-python = ">=3.13"
 dependencies = [
     "einops>=0.8.1",
     "equinox>=0.13.1",
-    "gdown>=5.2.0",
     "gemmi>=0.7.3",
     "jax>=0.8.0",
     "jaxtyping>=0.3.3",
     "loguru>=0.7.3",
+    "torch>=2.9.0",
     "tqdm>=4.67.1",
 ]
 
@@ -24,6 +24,8 @@ dev = [
     "types-tqdm>=4.67.0.20250809",
 ]
 
+[tool.ruff]
+line-length = 100
 
 [tool.ruff.lint]
 extend-select = [
