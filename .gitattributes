@@ -1,0 +1,8 @@
+data/weights/vanilla/v_48_010.pt filter=lfs diff=lfs merge=lfs -text
+data/weights/vanilla/v_48_020.pt filter=lfs diff=lfs merge=lfs -text
+data/weights/vanilla/v_48_030.pt filter=lfs diff=lfs merge=lfs -text
+data/weights/soluble/v_48_002.pt filter=lfs diff=lfs merge=lfs -text
+data/weights/soluble/v_48_010.pt filter=lfs diff=lfs merge=lfs -text
+data/weights/soluble/v_48_020.pt filter=lfs diff=lfs merge=lfs -text
+data/weights/soluble/v_48_030.pt filter=lfs diff=lfs merge=lfs -text
+data/weights/vanilla/v_48_002.pt filter=lfs diff=lfs merge=lfs -text
