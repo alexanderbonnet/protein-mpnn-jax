@@ -1,8 +1,6 @@
 import collections
-import dataclasses
 from pathlib import Path
 
-import equinox as eqx
 import equinox.nn as nn
 import jax.random as jr
 import loguru
@@ -10,14 +8,8 @@ import loguru
 from proteinmpnn import constants, mpnn, parse, utils
 
 
-@dataclasses.dataclass
-class SampledSequence:
-    sequence: str
-    chain: str
-
-
 def sample(
-    weights_path: str | Path,
+    model_name: str,
     backbone_path: str | Path,
     top_k: int = 1,
     temperature: float = 1.0,
@@ -25,7 +17,7 @@ def sample(
     fixed_chains: list[str] | None = None,
     seed: int = 42,
     progress_bar: bool = False,
-) -> list[SampledSequence]:
+) -> list[dict[str, str]]:
     backbone = parse.read_structure(str(backbone_path), use_assembly=True)
     residues = parse.parse_backbone(backbone)
     inputs = parse.prepare_tensors(residues)
@@ -39,15 +31,12 @@ def sample(
         key=key1,
     )
 
-    model = mpnn.ProteinMPNN(**constants.DEFAULT_HYPERPARAMS, key=key2)  # type: ignore[arg-type]
-    model = eqx.tree_deserialise_leaves(path_or_file=weights_path, like=model)
-    nn.inference_mode(pytree=model, value=True)
-    loguru.logger.info("Loaded model weights.")
+    model = mpnn.ProteinMPNN.from_pretrained(model_name, key=key2)
+    model = nn.inference_mode(pytree=model, value=True)
 
-    loguru.logger.info("Sampling sequence...")
+    loguru.logger.info("Loaded model weights. Sampling...")
 
-    sampled = mpnn.sample(
-        model=model,
+    sampled = model.sample(
         sequence=inputs.restypes,
         pos=inputs.pos,
         residue_index=inputs.residue_index,
@@ -69,7 +58,7 @@ def sample(
     k = 0
     for chain in chains:
         sequence = "".join([constants.VOCABULARY[s] for s in sampled[k : k + chain_lengths[chain]]])
-        results.append(SampledSequence(sequence=sequence, chain=chain))
+        results.append(dict(sequence=sequence, chain=chain))
         k += chain_lengths[chain]
 
     return results
