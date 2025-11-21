@@ -112,6 +112,27 @@ class BackBoneTensors:
     restypes: Int[Array, " n"]
 
 
+def pad(backbone_tensors: BackBoneTensors, n: int) -> "BackBoneTensors":
+    """Pad tensors to length n."""
+    pad_length = n - backbone_tensors.pos.shape[0]
+    if pad_length <= 0:
+        return backbone_tensors
+
+    pos_pad = jnp.zeros(shape=(pad_length, 4, 3), dtype=backbone_tensors.pos.dtype)
+    residue_index_pad = jnp.zeros(shape=(pad_length,), dtype=backbone_tensors.residue_index.dtype)
+    chain_labels_pad = jnp.zeros(shape=(pad_length,), dtype=backbone_tensors.chain_labels.dtype)
+    mask_pad = jnp.zeros(shape=(pad_length,), dtype=backbone_tensors.mask.dtype)
+    restypes_pad = jnp.zeros(shape=(pad_length,), dtype=backbone_tensors.restypes.dtype)
+
+    return BackBoneTensors(
+        pos=jnp.concatenate([backbone_tensors.pos, pos_pad], axis=0),
+        residue_index=jnp.concatenate([backbone_tensors.residue_index, residue_index_pad], axis=0),
+        chain_labels=jnp.concatenate([backbone_tensors.chain_labels, chain_labels_pad], axis=0),
+        mask=jnp.concatenate([backbone_tensors.mask, mask_pad], axis=0),
+        restypes=jnp.concatenate([backbone_tensors.restypes, restypes_pad], axis=0),
+    )
+
+
 def prepare_tensors(residues: list[BackboneResidue]) -> BackBoneTensors:
     """Prepare tensors from a list of BackboneResidue objects."""
     pos = jnp.zeros(shape=(len(residues), 4, 3))

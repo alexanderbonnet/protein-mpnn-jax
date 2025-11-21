@@ -28,7 +28,7 @@ def pairwise_distances(
 ) -> Float[Array, "n n"]:
     """Compute pairwise Euclidean distances between points."""
     diff = x[:, None, :] - y[None, :, :]
-    return jnp.sqrt(jnp.sum(diff**2, axis=-1) + epsilon)
+    return jnp.sqrt(jnp.einsum("nmd->nm", diff**2) + epsilon)
 
 
 def mink_neighbors(
@@ -37,7 +37,7 @@ def mink_neighbors(
     """Compute distances and edges indices for the k-nearest using a
     distance matrix and a mask.
     """
-    mask = mask[None, :] * mask[:, None]
+    mask = jnp.einsum("i,j->ij", mask, mask)
     x = x * mask
     x = x + (1 - mask) * jnp.max(x, axis=-1, keepdims=True)
     distances, indices = jax.lax.top_k(-x, k)
@@ -50,7 +50,7 @@ def radial_basis_function(
     """Compute Gaussian radial basis functions."""
     mu = jnp.linspace(dmin, dmax, dim)
     beta = (dim / (dmax - dmin)) ** 2
-    return jnp.exp(-beta * (einops.rearrange(x, "n k -> n k ()") - mu) ** 2)
+    return jnp.exp(-beta * (x[:, :, None] - mu) ** 2)
 
 
 def gather_edges(
@@ -303,11 +303,8 @@ class EncoderBlock(eqx.Module):
         )
         message = jax.vmap(jax.vmap(self.in_block))(message)
 
-        # attention mask
-        message = message * einops.rearrange(mask_edges, "n k -> n k ()")
-
-        # aggregate message
-        message = einops.reduce(message, "n k d -> n d", "sum") / self.scale
+        # attention mask and sum over edges
+        message = jnp.einsum("nkd, nk -> nd", message, mask_edges) / self.scale
 
         # dropout and norm
         message = self.dropout1(message, key=key1, inference=not enable_dropout)
@@ -321,7 +318,7 @@ class EncoderBlock(eqx.Module):
         out_nodes = jax.vmap(self.norm2)(out_nodes + message)
 
         # node mask
-        out_nodes = out_nodes * einops.rearrange(mask_nodes, "n -> n ()")
+        out_nodes = jnp.einsum("nd, n -> nd", out_nodes, mask_nodes)
 
         # update edge representation
         message = jnp.concat(
@@ -389,12 +386,11 @@ class DecoderBlock(eqx.Module):
         key1, key2 = jr.split(key, 2)
 
         message = jnp.concat(
-            [einops.repeat(nodes, "n d -> n k d", k=edges.shape[1]), edges],
-            axis=-1,
+            [einops.repeat(nodes, "n d -> n k d", k=edges.shape[1]), edges], axis=-1
         )
         message = jax.vmap(jax.vmap(self.block))(message)
 
-        message = einops.reduce(message, "n k d -> n d", "sum") / self.scale
+        message = jnp.einsum("nkd->nd", message) / self.scale
         message = self.dropout1(message, key=key1, inference=not enable_dropout)
         out_nodes = jax.vmap(self.norm1)(nodes + message)
 
@@ -402,7 +398,7 @@ class DecoderBlock(eqx.Module):
         message = self.dropout2(message, key=key2, inference=not enable_dropout)
         out_nodes = jax.vmap(self.norm2)(out_nodes + message)
 
-        return out_nodes * einops.rearrange(mask_nodes, "n -> n ()")
+        return jnp.einsum("nd, n -> nd", out_nodes, mask_nodes)
 
 
 def build_decoding_attention_mask(
@@ -425,9 +421,9 @@ def build_forward_backward_mask(
     """Build forward and backward attention masks for the decoder."""
     decoding_attention_mask = build_decoding_attention_mask(decoding_order, edge_index)
 
-    mask = einops.rearrange(mask, "n -> n ()")
-    mask_backward = decoding_attention_mask * mask
-    mask_forward = (1.0 - decoding_attention_mask) * mask
+    pattern = "nk, n->nk"
+    mask_backward = jnp.einsum(pattern, decoding_attention_mask, mask)
+    mask_forward = jnp.einsum(pattern, 1.0 - decoding_attention_mask, mask)
 
     return mask_backward, mask_forward
 
@@ -646,7 +642,10 @@ class ProteinMPNN(eqx.Module):
         *,
         key: PRNGKeyArray,
         progress_bar: bool = False,
-    ) -> Int[Array, " n"]:
+    ) -> tuple[Int[Array, " n"], Float[Array, " n"]]:
+        # set probabilities for fixed residues to -1
+        probabilities = jnp.zeros_like(sequence, dtype=jnp.float32) - 1
+
         nodes, edges, edge_index = self.encode(
             pos=pos,
             residue_index=residue_index,
@@ -676,12 +675,15 @@ class ProteinMPNN(eqx.Module):
                 sampled = jnp.argmax(logits[decoding_order[idx]])
             else:
                 top_k_logits = keep_top_k(logits[decoding_order[idx]], k=top_k)
-                probs = jax.nn.softmax(top_k_logits / temperature)
+                probs = jax.nn.softmax(top_k_logits)
                 sampled = jr.choice(key=key2, a=logits.shape[-1], p=probs, shape=())
 
             sequence = sequence.at[decoding_order[idx]].set(sampled)
 
-        return sequence
+            probs = jax.nn.softmax(logits[decoding_order[idx]])
+            probabilities = probabilities.at[decoding_order[idx]].set(probs[sampled])
+
+        return sequence, probabilities
 
 
 def update_eqx_with_state_dict(
