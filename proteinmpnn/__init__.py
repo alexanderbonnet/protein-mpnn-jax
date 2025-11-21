@@ -1,11 +1,18 @@
 import collections
 from pathlib import Path
+from typing import TypedDict
 
 import equinox.nn as nn
 import jax.random as jr
 import loguru
 
 from proteinmpnn import constants, mpnn, parse, utils
+
+
+class SampleResult(TypedDict):
+    sequence: str
+    chain: str
+    probabilities: list[float]
 
 
 def sample(
@@ -17,7 +24,7 @@ def sample(
     fixed_chains: list[str] | None = None,
     seed: int = 42,
     progress_bar: bool = False,
-) -> list[dict[str, str]]:
+) -> list[SampleResult]:
     backbone = parse.read_structure(str(backbone_path), use_assembly=True)
     residues = parse.parse_backbone(backbone)
     inputs = parse.prepare_tensors(residues)
@@ -60,7 +67,7 @@ def sample(
     for chain in chains:
         sequence = "".join([constants.VOCABULARY[s] for s in sampled[k : k + chain_lengths[chain]]])
         probs = probabilities[k : k + chain_lengths[chain]].tolist()
-        results.append(dict(sequence=sequence, chain=chain, probabilities=probs))
+        results.append(SampleResult(sequence=sequence, chain=chain, probabilities=probs))
         k += chain_lengths[chain]
 
     return results
