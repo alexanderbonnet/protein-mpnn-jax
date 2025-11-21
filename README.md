@@ -25,7 +25,7 @@ sampled = proteinmpnn.sample(
 )
 
 # sampled[1] -> SampledSequence
-# {'sequence': 'KTYTQRCRLFVGNLPADITEDEFK...', 'chain': 'A'}
+# {'sequence': 'KTYTQRCRLFVGNLPADITEDEFK...', 'chain': 'A', probabilities: [0.79, 0.48, 1.0, 0.97, 0.71, ...]}
 ```
 
 ```bash

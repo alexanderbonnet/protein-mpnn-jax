@@ -31,12 +31,13 @@ def sample(
         key=key1,
     )
 
+    model: mpnn.ProteinMPNN
     model = mpnn.ProteinMPNN.from_pretrained(model_name, key=key2)
     model = nn.inference_mode(pytree=model, value=True)
 
     loguru.logger.info("Loaded model weights. Sampling...")
 
-    sampled = model.sample(
+    sampled, probabilities = model.sample(
         sequence=inputs.restypes,
         pos=inputs.pos,
         residue_index=inputs.residue_index,
@@ -58,7 +59,8 @@ def sample(
     k = 0
     for chain in chains:
         sequence = "".join([constants.VOCABULARY[s] for s in sampled[k : k + chain_lengths[chain]]])
-        results.append(dict(sequence=sequence, chain=chain))
+        probs = probabilities[k : k + chain_lengths[chain]].tolist()
+        results.append(dict(sequence=sequence, chain=chain, probabilities=probs))
         k += chain_lengths[chain]
 
     return results

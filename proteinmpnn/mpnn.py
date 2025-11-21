@@ -646,7 +646,10 @@ class ProteinMPNN(eqx.Module):
         *,
         key: PRNGKeyArray,
         progress_bar: bool = False,
-    ) -> Int[Array, " n"]:
+    ) -> tuple[Int[Array, " n"], Float[Array, " n"]]:
+        # set probabilities for fixed residues to -1
+        probabilities = jnp.zeros_like(sequence, dtype=jnp.float32) - 1
+
         nodes, edges, edge_index = self.encode(
             pos=pos,
             residue_index=residue_index,
@@ -676,12 +679,15 @@ class ProteinMPNN(eqx.Module):
                 sampled = jnp.argmax(logits[decoding_order[idx]])
             else:
                 top_k_logits = keep_top_k(logits[decoding_order[idx]], k=top_k)
-                probs = jax.nn.softmax(top_k_logits / temperature)
+                probs = jax.nn.softmax(top_k_logits)
                 sampled = jr.choice(key=key2, a=logits.shape[-1], p=probs, shape=())
 
             sequence = sequence.at[decoding_order[idx]].set(sampled)
 
-        return sequence
+            probs = jax.nn.softmax(logits[decoding_order[idx]])
+            probabilities = probabilities.at[decoding_order[idx]].set(probs[sampled])
+
+        return sequence, probabilities
 
 
 def update_eqx_with_state_dict(
