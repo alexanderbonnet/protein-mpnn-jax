@@ -45,29 +45,29 @@ def test_masking(backbone_path: str) -> None:
 
     backbone = parse.read_structure(str(backbone_path), use_assembly=True)
     residues = parse.parse_backbone(backbone)
-    inputs = parse.prepare_tensors(residues)
+    backbone_tensors = parse.prepare_tensors(residues)
 
-    padded_inputs = inputs.pad(n=inputs.pos.shape[0] + to_pad)
+    padded_inputs = parse.pad(backbone_tensors, n=backbone_tensors.pos.shape[0] + to_pad)
 
-    key1, key2, key3 = jr.split(jr.PRNGKey(74), num=3)
+    key1, key2 = jr.split(jr.PRNGKey(74), num=2)
 
-    decoding_order = jnp.arange(inputs.pos.shape[0], dtype=jnp.int32)
+    decoding_order = jnp.arange(backbone_tensors.pos.shape[0], dtype=jnp.int32)
 
     decoding_order_padding = jnp.ones(shape=(to_pad,), dtype=jnp.int32) + jnp.max(decoding_order)
     padded_decoding_order = jnp.concatenate([decoding_order, decoding_order_padding], axis=0)
 
     model: mpnn.ProteinMPNN
-    model = mpnn.ProteinMPNN.from_pretrained("soluble/v_48_002", key=key2)
+    model = mpnn.ProteinMPNN.from_pretrained("soluble/v_48_002", key=key1)
 
     outputs = model(
-        sequence=inputs.restypes,
-        pos=inputs.pos,
-        residue_index=inputs.residue_index,
-        chain_labels=inputs.chain_labels,
-        mask_nodes=inputs.mask,
+        sequence=backbone_tensors.restypes,
+        pos=backbone_tensors.pos,
+        residue_index=backbone_tensors.residue_index,
+        chain_labels=backbone_tensors.chain_labels,
+        mask_nodes=backbone_tensors.mask,
         decoding_order=decoding_order,
         enable_dropout=False,
-        key=key3,
+        key=key2,
     )
 
     outputs_padded = model(
@@ -78,7 +78,7 @@ def test_masking(backbone_path: str) -> None:
         mask_nodes=padded_inputs.mask,
         decoding_order=padded_decoding_order,
         enable_dropout=False,
-        key=key3,
+        key=key2,
     )
 
     assert jnp.allclose(outputs, outputs_padded[: outputs.shape[0], :])
